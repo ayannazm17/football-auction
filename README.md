@@ -28,9 +28,9 @@ An immersive, real-time auction platform designed for football squad selection. 
 - [Git](https://git-scm.com/)
 
 ## 📦 Installation & Setup
-
-1. Clone the Repository
 ```bash
+1. Clone the Repository
+
 git clone [https://github.com/ayannazm17/football-auction.git](https://github.com/ayannazm17/football-auction.git)
 cd football-auction
 
@@ -140,3 +140,4 @@ Distributed under the MIT License.
 
 ### 🚀 Next Step: Hosting Prep
 Since you want to host this, would you like me to help you create a **`Dockerfile`** or a **`Procfile`**? These files tell hosting platforms like Railway or Render exactly how to start your app in the cloud automatically.
+```
