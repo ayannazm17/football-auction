@@ -133,8 +133,16 @@ app.post("/upload", upload.single("file"), (req, res) => {
 			const category = getValueByHeader(row, ["category", "cat"]);
 			const position = getValueByHeader(row, ["position", "role"]);
 			const avgRating = Number(row.AvgRating || 0);
-			const lastMatchRating = row.LastMatchRating ? Number(row.LastMatchRating) : undefined;
-			const lastMatchStats = getValueByHeader(row, ["lastmatchstats", "last match stats", "stats"]);
+			const rawLastMatchRating = row["LastMatchRating"] || row["lastMatchRating"] || 0;
+			const lastMatchRating = (() => {
+				if (rawLastMatchRating === null || rawLastMatchRating === undefined || rawLastMatchRating === "") {
+					return 0;
+				}
+
+				const parsed = Number(rawLastMatchRating);
+				return Number.isNaN(parsed) ? String(rawLastMatchRating).trim() : parsed;
+			})();
+			const lastMatchStats = row["Last Match Stats"] || row["lastmatchstats"] || "No stats available";
 
 			if (!name || !category || !position) {
 				continue;
@@ -150,11 +158,13 @@ app.post("/upload", upload.single("file"), (req, res) => {
 				category: normalizeCategoryToShortForm(category),
 				position: String(position).trim(),
 				avgRating: Number.isNaN(avgRating) ? 0 : avgRating,
-				lastMatchRating: Number.isNaN(lastMatchRating) ? undefined : lastMatchRating,
-				lastMatchStats: lastMatchStats ? String(lastMatchStats).trim() : undefined,
+				lastMatchRating,
+				lastMatchStats: String(lastMatchStats).trim(),
 				isSold: false,
 			});
 		}
+
+		console.log("Sample Player Data:", players[0]);
 
 		return res.json({
 			message: "Players uploaded successfully",
