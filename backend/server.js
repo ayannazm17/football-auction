@@ -2,15 +2,28 @@ const express = require("express");
 const cors = require("cors");
 const multer = require("multer");
 const xlsx = require("xlsx");
+const allowedOrigins = [
+  'http://localhost:3000',
+  process.env.FRONTEND_URL // We will set this in Render's dashboard
+];
 
 const app = express();
-const PORT = 5000;
+const PORT = process.env.PORT || 5000;
 
-app.use(
-	cors({
-		origin: "http://localhost:3000",
-	})
-);
+app.use(cors({
+  origin: function (origin, callback) {
+    // allow requests with no origin (like mobile apps or curl)
+    if (!origin) return callback(null, true);
+    
+    if (allowedOrigins.indexOf(origin) === -1) {
+      const msg = 'The CORS policy for this site does not allow access from the specified Origin.';
+      return callback(new Error(msg), false);
+    }
+    return callback(null, true);
+  },
+  methods: ['GET', 'POST'],
+  credentials: true
+}));
 app.use(express.json());
 
 const upload = multer({
@@ -261,4 +274,6 @@ app.use((error, req, res, next) => {
 
 app.listen(PORT, () => {
 	console.log(`Server running on port ${PORT}`);
+	const PORT = process.env.PORT || 5000;
+app.listen(PORT, '0.0.0.0', () => console.log(`Server running on port ${PORT}`));
 });
