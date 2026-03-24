@@ -29,7 +29,7 @@ An immersive, real-time auction platform designed for football squad selection. 
 
 ## 📦 Installation & Setup
 
-### 1. Clone the Repository
+1. Clone the Repository
 ```bash
 git clone [https://github.com/ayannazm17/football-auction.git](https://github.com/ayannazm17/football-auction.git)
 cd football-auction
