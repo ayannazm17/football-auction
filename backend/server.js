@@ -41,12 +41,12 @@ app.use(cors({
 }));
 app.use(express.json());
 
-function requireAdminKey(req, res, next) {
+function verifyAdmin(req, res, next) {
 	if (!ADMIN_SECRET_KEY) {
 		return res.status(500).json({ error: "Server admin key is not configured" });
 	}
 
-	const providedKey = req.header("x-admin-key");
+	const providedKey = req.headers["x-admin-key"];
 	if (!providedKey || providedKey !== ADMIN_SECRET_KEY) {
 		return res.status(401).json({ error: "Unauthorized" });
 	}
@@ -147,7 +147,7 @@ function getCountRemainingByCategory() {
 	return { counts, totalRemaining };
 }
 
-app.post("/upload", requireAdminKey, upload.single("file"), (req, res) => {
+app.post("/upload", verifyAdmin, upload.single("file"), (req, res) => {
 	try {
 		if (!req.file) {
 			return res.status(400).json({ error: "No file uploaded" });
@@ -262,7 +262,7 @@ app.get("/draw", (req, res) => {
 	});
 });
 
-app.post("/sold", requireAdminKey, (req, res) => {
+app.post("/sold", verifyAdmin, (req, res) => {
 	const { name, timerExpired } = req.body || {};
 
 	if (!name) {

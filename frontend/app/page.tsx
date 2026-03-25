@@ -81,6 +81,10 @@ export default function Home() {
 	const [bidTimestamps, setBidTimestamps] = useState<number[]>([]);
 	const [isFinalScreenOpen, setIsFinalScreenOpen] = useState(false);
 
+	useEffect(() => {
+		console.log("NEXT_PUBLIC_ADMIN_SECRET_KEY:", process.env.NEXT_PUBLIC_ADMIN_SECRET_KEY);
+	}, []);
+
 	const roundedBid = useMemo(() => Number(currentBid.toFixed(1)), [currentBid]);
 
 	const remainingCounts = useMemo<Record<PositionFilter, number>>(() => {
@@ -443,6 +447,7 @@ export default function Home() {
 				method: "POST",
 				headers: {
 					"Content-Type": "application/json",
+					"x-admin-key": process.env.NEXT_PUBLIC_ADMIN_SECRET_KEY || "",
 				},
 				body: JSON.stringify({ name: currentPlayer.name, timerExpired: true }),
 			});
@@ -565,6 +570,9 @@ export default function Home() {
 			console.log("Fetching from:", API_URL);
 			const response = await fetch(`${API_URL}/upload`, {
 				method: "POST",
+				headers: {
+					"x-admin-key": process.env.NEXT_PUBLIC_ADMIN_SECRET_KEY || "",
+				},
 				body: formData,
 			});
 
@@ -789,6 +797,7 @@ export default function Home() {
 				method: "POST",
 				headers: {
 					"Content-Type": "application/json",
+					"x-admin-key": process.env.NEXT_PUBLIC_ADMIN_SECRET_KEY || "",
 				},
 				body: JSON.stringify({ name: currentPlayer.name }),
 			});
