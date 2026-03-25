@@ -1,15 +1,15 @@
-const PORT = process.env.PORT || 5000;
 const express = require("express");
 const cors = require("cors");
+const path = require('path');
 const multer = require("multer");
 const xlsx = require("xlsx");
 const allowedOrigins = [
   'http://localhost:3000',
-  process.env.FRONTEND_URL // We will set this in Render's dashboard
+  process.env.FRONTEND_URL || 'https://your-temporary-vercel-link.app' // We will set this in Render's dashboard
 ];
 
 const app = express();
-
+const PORT = process.env.PORT || 5000;
 
 app.use(cors({
   origin: function (origin, callback) {
