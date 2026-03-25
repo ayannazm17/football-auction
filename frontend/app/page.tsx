@@ -182,7 +182,18 @@ export default function Home() {
 		bidTimestamps[bidTimestamps.length - 1] - bidTimestamps[bidTimestamps.length - 4] <= 10_000;
 
 	function handleLogin() {
-		if (adminKey === (process.env.NEXT_PUBLIC_ADMIN_SECRET_KEY || "")) {
+		if (process.env.NEXT_PUBLIC_ADMIN_SECRET_KEY === undefined) {
+			console.log("NEXT_PUBLIC_ADMIN_SECRET_KEY is missing entirely.");
+			alert("Environment Variable Missing");
+			setIsAuthorized(false);
+			setLoginError("Incorrect Password. Access Denied.");
+			return;
+		}
+
+		const enteredPassword = adminKey.trim();
+		const expectedPassword = process.env.NEXT_PUBLIC_ADMIN_SECRET_KEY.trim();
+
+		if (enteredPassword === expectedPassword) {
 			setIsAuthorized(true);
 			setLoginError("");
 			return;
