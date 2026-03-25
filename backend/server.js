@@ -1,6 +1,7 @@
 const express = require("express");
 const cors = require("cors");
-const path = require('path');
+const helmet = require("helmet");
+const rateLimit = require("express-rate-limit");
 const multer = require("multer");
 const xlsx = require("xlsx");
 const allowedOrigins = [
@@ -11,6 +12,18 @@ const allowedOrigins = [
 
 const app = express();
 const PORT = process.env.PORT || 5000;
+const ADMIN_SECRET_KEY = process.env.ADMIN_SECRET_KEY;
+
+app.disable("x-powered-by");
+app.use(helmet());
+
+const apiLimiter = rateLimit({
+	windowMs: 15 * 60 * 1000,
+	max: 100,
+	standardHeaders: true,
+	legacyHeaders: false,
+});
+app.use(apiLimiter);
 
 app.use(cors({
   origin: function (origin, callback) {
@@ -28,18 +41,34 @@ app.use(cors({
 }));
 app.use(express.json());
 
+function requireAdminKey(req, res, next) {
+	if (!ADMIN_SECRET_KEY) {
+		return res.status(500).json({ error: "Server admin key is not configured" });
+	}
+
+	const providedKey = req.header("x-admin-key");
+	if (!providedKey || providedKey !== ADMIN_SECRET_KEY) {
+		return res.status(401).json({ error: "Unauthorized" });
+	}
+
+	return next();
+}
+
 const upload = multer({
 	storage: multer.memoryStorage(),
+	limits: {
+		fileSize: 5 * 1024 * 1024,
+	},
 	fileFilter: (req, file, cb) => {
 		const allowedMimeTypes = [
 			"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 			"application/vnd.ms-excel",
 		];
 
-		const isExcelByMime = allowedMimeTypes.includes(file.mimetype);
 		const isExcelByExt = /\.(xlsx|xls)$/i.test(file.originalname || "");
+		const isExcelByMime = allowedMimeTypes.includes(file.mimetype);
 
-		if (isExcelByMime || isExcelByExt) {
+		if (isExcelByExt && isExcelByMime) {
 			cb(null, true);
 			return;
 		}
@@ -118,7 +147,7 @@ function getCountRemainingByCategory() {
 	return { counts, totalRemaining };
 }
 
-app.post("/upload", upload.single("file"), (req, res) => {
+app.post("/upload", requireAdminKey, upload.single("file"), (req, res) => {
 	try {
 		if (!req.file) {
 			return res.status(400).json({ error: "No file uploaded" });
@@ -233,7 +262,7 @@ app.get("/draw", (req, res) => {
 	});
 });
 
-app.post("/sold", (req, res) => {
+app.post("/sold", requireAdminKey, (req, res) => {
 	const { name, timerExpired } = req.body || {};
 
 	if (!name) {
@@ -264,6 +293,10 @@ app.post("/sold", (req, res) => {
 
 app.use((error, req, res, next) => {
 	if (error instanceof multer.MulterError) {
+		if (error.code === "LIMIT_FILE_SIZE") {
+			return res.status(413).json({ error: "File too large. Maximum allowed size is 5MB" });
+		}
+
 		return res.status(400).json({ error: error.message });
 	}
 
