@@ -5,13 +5,7 @@ import { Bebas_Neue, Manrope } from "next/font/google";
 import * as XLSX from "xlsx";
 import html2canvas from "html2canvas";
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'process.env.NEXT_PUBLIC_API_URL';
-// Then use it in your fetch calls like this:
-const handleDraw = async () => {
-  const response = await fetch(`${API_URL}/draw`);
-  const data = await response.json();
-  // ... rest of your logic
-};
+const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000";
 
 const displayFont = Bebas_Neue({
 	subsets: ["latin"],
@@ -443,7 +437,7 @@ export default function Home() {
 		if (!currentPlayer) return;
 
 		try {
-			const response = await fetch("process.env.NEXT_PUBLIC_API_URL/sold", {
+			const response = await fetch(`${API_URL}/sold`, {
 				method: "POST",
 				headers: {
 					"Content-Type": "application/json",
@@ -566,7 +560,7 @@ export default function Home() {
 			const formData = new FormData();
 			formData.append("file", file);
 
-			const response = await fetch("process.env.NEXT_PUBLIC_API_URL/upload", {
+			const response = await fetch(`${API_URL}/upload`, {
 				method: "POST",
 				body: formData,
 			});
@@ -613,7 +607,7 @@ export default function Home() {
 
 		try {
 			const query = position ? `?category=${encodeURIComponent(position)}` : "";
-			const response = await fetch(`process.env.NEXT_PUBLIC_API_URL/draw${query}`);
+			const response = await fetch(`${API_URL}/draw${query}`);
 			const data = await response.json();
 
 			if (!response.ok) {
@@ -786,7 +780,7 @@ export default function Home() {
 		setSelling(true);
 
 		try {
-const response = await fetch("process.env.NEXT_PUBLIC_API_URL/sold", {
+			const response = await fetch(`${API_URL}/sold`, {
 				method: "POST",
 				headers: {
 					"Content-Type": "application/json",
