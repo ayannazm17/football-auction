@@ -45,6 +45,8 @@ const FINAL_SQUAD_SIZE = 12;
 const AUCTION_STORAGE_KEY = "auction_state_v1";
 
 export default function Home() {
+	const [isAuthorized, setIsAuthorized] = useState(false);
+	const [adminKey, setAdminKey] = useState("");
 	const [captain1Name, setCaptain1Name] = useState("Captain 1");
 	const [captain2Name, setCaptain2Name] = useState("Captain 2");
 	const [captain1Budget, setCaptain1Budget] = useState(100);
@@ -177,6 +179,10 @@ export default function Home() {
 	const isHotBidding =
 		bidTimestamps.length >= 4 &&
 		bidTimestamps[bidTimestamps.length - 1] - bidTimestamps[bidTimestamps.length - 4] <= 10_000;
+
+	function handleUnlockDashboard() {
+		setIsAuthorized(true);
+	}
 
 	function playGavel() {
 		try {
@@ -447,7 +453,7 @@ export default function Home() {
 				method: "POST",
 				headers: {
 					"Content-Type": "application/json",
-					"x-admin-key": process.env.NEXT_PUBLIC_ADMIN_SECRET_KEY || "",
+					"x-admin-key": adminKey,
 				},
 				body: JSON.stringify({ name: currentPlayer.name, timerExpired: true }),
 			});
@@ -571,7 +577,7 @@ export default function Home() {
 			const response = await fetch(`${API_URL}/upload`, {
 				method: "POST",
 				headers: {
-					"x-admin-key": process.env.NEXT_PUBLIC_ADMIN_SECRET_KEY || "",
+					"x-admin-key": adminKey,
 				},
 				body: formData,
 			});
@@ -619,7 +625,11 @@ export default function Home() {
 		try {
 			const query = position ? `?category=${encodeURIComponent(position)}` : "";
 			console.log("Fetching from:", API_URL);
-			const response = await fetch(`${API_URL}/draw${query}`);
+			const response = await fetch(`${API_URL}/draw${query}`, {
+				headers: {
+					"x-admin-key": adminKey,
+				},
+			});
 			const data = await response.json();
 
 			if (!response.ok) {
@@ -797,7 +807,7 @@ export default function Home() {
 				method: "POST",
 				headers: {
 					"Content-Type": "application/json",
-					"x-admin-key": process.env.NEXT_PUBLIC_ADMIN_SECRET_KEY || "",
+					"x-admin-key": adminKey,
 				},
 				body: JSON.stringify({ name: currentPlayer.name }),
 			});
@@ -872,6 +882,39 @@ export default function Home() {
 		<main
 			className={`${bodyFont.className} min-h-screen bg-gradient-to-b from-slate-100 to-slate-50 text-slate-900`}
 		>
+			<div className="fixed right-4 top-4 z-[90] rounded-full border border-white/20 bg-slate-900/90 p-2 shadow-xl">
+				<svg
+					viewBox="0 0 24 24"
+					className={`h-5 w-5 ${isAuthorized ? "text-emerald-400" : "text-red-500"}`}
+					fill="currentColor"
+					aria-label={isAuthorized ? "Secured" : "Locked"}
+				>
+					<path d="M12 2 4 5v6c0 5.25 3.5 10.17 8 11 4.5-.83 8-5.75 8-11V5l-8-3Zm0 2.18L18 6.2V11c0 4.1-2.58 8.08-6 8.95C8.58 19.08 6 15.1 6 11V6.2l6-2.02Zm0 2.32a3 3 0 0 0-3 3v1H8a1 1 0 0 0-1 1V16a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1v-4.5a1 1 0 0 0-1-1h-1v-1a3 3 0 0 0-3-3Zm-1 4v-1a1 1 0 1 1 2 0v1h-2Z" />
+				</svg>
+			</div>
+
+			{!isAuthorized && (
+				<div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/95 px-4">
+					<div className="w-full max-w-md rounded-2xl border border-cyan-400/40 bg-slate-900 p-6 shadow-2xl">
+						<h2 className={`${displayFont.className} text-4xl tracking-wide text-cyan-300`}>Admin Access</h2>
+						<p className="mt-2 text-sm text-slate-300">Enter admin password to unlock the dashboard.</p>
+						<input
+							type="password"
+							value={adminKey}
+							onChange={(event) => setAdminKey(event.target.value)}
+							className="mt-5 w-full rounded-lg border border-slate-600 bg-slate-950 px-3 py-2 text-sm font-semibold text-white outline-none focus:border-cyan-400"
+							placeholder="Enter admin key"
+						/>
+						<button
+							onClick={handleUnlockDashboard}
+							className="mt-4 w-full rounded-lg bg-cyan-500 px-4 py-2 text-sm font-extrabold uppercase tracking-wide text-slate-950 transition hover:bg-cyan-400"
+						>
+							Unlock Dashboard
+						</button>
+					</div>
+				</div>
+			)}
+
 			<div className="mx-auto w-full">
 				{/* TOP SECTION: Player Spotlight Banner */}
 			<section className="sticky top-0 z-40 w-full border-b-4 border-yellow-400 bg-slate-900 px-4 py-3 sm:px-6 lg:px-8">
