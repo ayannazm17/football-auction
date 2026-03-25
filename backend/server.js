@@ -4,9 +4,10 @@ const path = require('path');
 const multer = require("multer");
 const xlsx = require("xlsx");
 const allowedOrigins = [
-  'http://localhost:3000',
-  process.env.FRONTEND_URL || 'https://your-temporary-vercel-link.app' // We will set this in Render's dashboard
-];
+	"http://localhost:3000",
+	"https://football-auction-kohl.vercel.app",
+	process.env.FRONTEND_URL,
+].filter(Boolean);
 
 const app = express();
 const PORT = process.env.PORT || 5000;

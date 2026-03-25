@@ -7,6 +7,7 @@ import html2canvas from "html2canvas";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000";
 
+
 const displayFont = Bebas_Neue({
 	subsets: ["latin"],
 	weight: "400",
@@ -437,6 +438,7 @@ export default function Home() {
 		if (!currentPlayer) return;
 
 		try {
+			console.log("Fetching from:", API_URL);
 			const response = await fetch(`${API_URL}/sold`, {
 				method: "POST",
 				headers: {
@@ -560,6 +562,7 @@ export default function Home() {
 			const formData = new FormData();
 			formData.append("file", file);
 
+			console.log("Fetching from:", API_URL);
 			const response = await fetch(`${API_URL}/upload`, {
 				method: "POST",
 				body: formData,
@@ -607,6 +610,7 @@ export default function Home() {
 
 		try {
 			const query = position ? `?category=${encodeURIComponent(position)}` : "";
+			console.log("Fetching from:", API_URL);
 			const response = await fetch(`${API_URL}/draw${query}`);
 			const data = await response.json();
 
@@ -780,6 +784,7 @@ export default function Home() {
 		setSelling(true);
 
 		try {
+			console.log("Fetching from:", API_URL);
 			const response = await fetch(`${API_URL}/sold`, {
 				method: "POST",
 				headers: {
