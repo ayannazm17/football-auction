@@ -47,6 +47,7 @@ const AUCTION_STORAGE_KEY = "auction_state_v1";
 export default function Home() {
 	const [isAuthorized, setIsAuthorized] = useState(false);
 	const [adminKey, setAdminKey] = useState("");
+	const [loginError, setLoginError] = useState("");
 	const [captain1Name, setCaptain1Name] = useState("Captain 1");
 	const [captain2Name, setCaptain2Name] = useState("Captain 2");
 	const [captain1Budget, setCaptain1Budget] = useState(100);
@@ -180,8 +181,15 @@ export default function Home() {
 		bidTimestamps.length >= 4 &&
 		bidTimestamps[bidTimestamps.length - 1] - bidTimestamps[bidTimestamps.length - 4] <= 10_000;
 
-	function handleUnlockDashboard() {
-		setIsAuthorized(true);
+	function handleLogin() {
+		if (adminKey === (process.env.NEXT_PUBLIC_ADMIN_SECRET_KEY || "")) {
+			setIsAuthorized(true);
+			setLoginError("");
+			return;
+		}
+
+		setIsAuthorized(false);
+		setLoginError("Incorrect Password. Access Denied.");
 	}
 
 	function playGavel() {
@@ -901,12 +909,18 @@ export default function Home() {
 						<input
 							type="password"
 							value={adminKey}
-							onChange={(event) => setAdminKey(event.target.value)}
+							onChange={(event) => {
+								setAdminKey(event.target.value);
+								if (loginError) {
+									setLoginError("");
+								}
+							}}
 							className="mt-5 w-full rounded-lg border border-slate-600 bg-slate-950 px-3 py-2 text-sm font-semibold text-white outline-none focus:border-cyan-400"
 							placeholder="Enter admin key"
 						/>
+						{loginError && <p className="mt-3 text-sm font-semibold text-red-400">{loginError}</p>}
 						<button
-							onClick={handleUnlockDashboard}
+							onClick={handleLogin}
 							className="mt-4 w-full rounded-lg bg-cyan-500 px-4 py-2 text-sm font-extrabold uppercase tracking-wide text-slate-950 transition hover:bg-cyan-400"
 						>
 							Unlock Dashboard
