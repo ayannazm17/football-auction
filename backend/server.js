@@ -1,3 +1,9 @@
+require('dotenv').config();
+console.log("--- BACKEND DEBUG ---");
+console.log("Looking for key in:", process.cwd());
+console.log("Is ADMIN_SECRET_KEY defined?", !!process.env.ADMIN_SECRET_KEY);
+console.log("----------------------");
+
 const express = require("express");
 const cors = require("cors");
 const helmet = require("helmet");
@@ -43,7 +49,7 @@ app.use(express.json());
 
 function verifyAdmin(req, res, next) {
 	if (!ADMIN_SECRET_KEY) {
-		return res.status(500).json({ error: "Server admin key is not configured" });
+		return res.status(500).json({ error: "Missing ADMIN_SECRET_KEY in backend .env file" });
 	}
 
 	const providedKey = req.headers["x-admin-key"];
@@ -79,6 +85,7 @@ const upload = multer({
 
 const players = [];
 const unsoldPool = [];
+const bidderTeams = {};
 
 function normalizeHeader(header) {
 	return String(header || "")
@@ -97,6 +104,20 @@ function getValueByHeader(row, aliases) {
 	}
 
 	return undefined;
+}
+
+function parseNumericOrText(value, fallbackValue = "N/A") {
+	if (value === null || value === undefined || value === "") {
+		return fallbackValue;
+	}
+
+	const parsed = Number(value);
+	if (!Number.isNaN(parsed)) {
+		return parsed;
+	}
+
+	const text = String(value).trim();
+	return text === "" ? fallbackValue : text;
 }
 
 function normalizeCategoryToShortForm(category) {
@@ -147,17 +168,32 @@ function getCountRemainingByCategory() {
 	return { counts, totalRemaining };
 }
 
+function toFinalReportPlayer(player) {
+	return {
+		"Player Name": player.name,
+		Category: normalizeCategoryToShortForm(player.category),
+		Position: String(player.position || "").trim(),
+		Rating: Number(player.avgRating || 0),
+		"Matches Played": player.matchesPlayed ?? "N/A",
+	};
+}
+
 app.post("/upload", verifyAdmin, upload.single("file"), (req, res) => {
 	try {
 		if (!req.file) {
 			return res.status(400).json({ error: "No file uploaded" });
 		}
 
-		// Get captain names from request body to exclude them
-		const captainNames = req.body?.captains || [];
-		const normalizedCaptains = captainNames.map((name) =>
-			String(name).trim().toLowerCase()
-		);
+		// FormData can send captains as a comma-separated string; normalize to array.
+		const rawCaptains = req.body?.captains;
+		const captainNames = Array.isArray(rawCaptains)
+			? rawCaptains
+			: typeof rawCaptains === "string"
+				? rawCaptains.split(",")
+				: [];
+		const normalizedCaptains = captainNames
+			.map((name) => String(name).trim().toLowerCase())
+			.filter((name) => name.length > 0);
 
 		const workbook = xlsx.read(req.file.buffer, { type: "buffer" });
 		const firstSheetName = workbook.SheetNames[0];
@@ -176,7 +212,10 @@ app.post("/upload", verifyAdmin, upload.single("file"), (req, res) => {
 			const name = getValueByHeader(row, ["name", "playername"]);
 			const category = getValueByHeader(row, ["category", "cat"]);
 			const position = getValueByHeader(row, ["position", "role"]);
-			const avgRating = Number(row.AvgRating || 0);
+			const rawAvgRating = getValueByHeader(row, ["avgrating", "rating", "avg"]);
+			const avgRating = Number(rawAvgRating || 0);
+			const rawMatchesPlayed = getValueByHeader(row, ["matchesplayed", "matches", "mp"]);
+			const matchesPlayed = parseNumericOrText(rawMatchesPlayed);
 			const rawLastMatchRating = row["LastMatchRating"] || row["lastMatchRating"] || 0;
 			const lastMatchRating = (() => {
 				if (rawLastMatchRating === null || rawLastMatchRating === undefined || rawLastMatchRating === "") {
@@ -201,6 +240,7 @@ app.post("/upload", verifyAdmin, upload.single("file"), (req, res) => {
 				name: String(name).trim(),
 				category: normalizeCategoryToShortForm(category),
 				position: String(position).trim(),
+				matchesPlayed,
 				avgRating: Number.isNaN(avgRating) ? 0 : avgRating,
 				lastMatchRating,
 				lastMatchStats: String(lastMatchStats).trim(),
@@ -209,7 +249,6 @@ app.post("/upload", verifyAdmin, upload.single("file"), (req, res) => {
 		}
 
 		console.log("Sample Player Data:", players[0]);
-
 		return res.json({
 			message: "Players uploaded successfully",
 			totalPlayers: players.length,
@@ -219,6 +258,15 @@ app.post("/upload", verifyAdmin, upload.single("file"), (req, res) => {
 	} catch (error) {
 		return res.status(500).json({ error: error.message || "Upload failed" });
 	}
+});
+
+app.get("/final-squad-report", verifyAdmin, (req, res) => {
+	const soldPlayers = players.filter((player) => player.isSold);
+
+	return res.json({
+		totalPlayers: soldPlayers.length,
+		report: soldPlayers.map(toFinalReportPlayer),
+	});
 });
 
 app.get("/draw", (req, res) => {
@@ -263,7 +311,19 @@ app.get("/draw", (req, res) => {
 });
 
 app.post("/sold", verifyAdmin, (req, res) => {
-	const { name, timerExpired } = req.body || {};
+	const { name, timerExpired, bidderName, amount } = req.body || {};
+	const isTimerExpired =
+		timerExpired === true ||
+		timerExpired === "true" ||
+		timerExpired === 1 ||
+		timerExpired === "1";
+	const hasBidderSale =
+		bidderName !== undefined &&
+		bidderName !== null &&
+		String(bidderName).trim() !== "" &&
+		amount !== undefined &&
+		amount !== null &&
+		amount !== "";
 
 	if (!name) {
 		return res.status(400).json({ error: "Player name is required" });
@@ -283,12 +343,38 @@ app.post("/sold", verifyAdmin, (req, res) => {
 
 	player.isSold = true;
 
+	if (hasBidderSale) {
+		const teamName = String(bidderName).trim();
+		const numericAmount = Number(amount);
+		const soldAmount = Number.isNaN(numericAmount) ? 0 : numericAmount;
+
+		if (!bidderTeams[teamName]) {
+			bidderTeams[teamName] = [];
+		}
+
+		const soldRecord = {
+			...player,
+			soldTo: teamName,
+			soldPrice: soldAmount,
+		};
+
+		bidderTeams[teamName].push(soldRecord);
+		player.soldTo = teamName;
+		player.soldPrice = soldAmount;
+	}
+
 	// If timer expired, add to unsoldPool (player was not sold in time)
-	if (timerExpired) {
+	if (isTimerExpired && !hasBidderSale) {
 		unsoldPool.push(player);
 	}
 
-	return res.json({ message: "Player marked as sold", player });
+	return res.json({
+		message: "Player marked as sold",
+		player,
+		timerExpired: isTimerExpired,
+		movedToUnsoldPool: isTimerExpired && !hasBidderSale,
+		savedToBidderTeam: hasBidderSale ? String(bidderName).trim() : null,
+	});
 });
 
 app.use((error, req, res, next) => {
@@ -308,4 +394,7 @@ app.use((error, req, res, next) => {
 });
 
 
-app.listen(PORT, '0.0.0.0', () => console.log(`Server running on port ${PORT}`));
+app.listen(PORT, '0.0.0.0', () => {
+	console.log("process.env.ADMIN_SECRET_KEY:", process.env.ADMIN_SECRET_KEY);
+	console.log(`Server running on port ${PORT}`);
+});

@@ -1,9 +1,9 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Bebas_Neue, Manrope } from "next/font/google";
-import * as XLSX from "xlsx";
-import html2canvas from "html2canvas";
+import confetti from 'canvas-confetti';
+import * as XLSX from 'xlsx';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000";
 
@@ -22,6 +22,7 @@ type Player = {
 	name: string;
 	category: string;
 	position: string;
+	matchesPlayed?: number | string;
 	avgRating: number;
 	lastMatchRating?: number | string;
 	lastMatchStats?: string;
@@ -50,6 +51,7 @@ export default function Home() {
 	const [loginError, setLoginError] = useState("");
 	const [captain1Name, setCaptain1Name] = useState("Captain 1");
 	const [captain2Name, setCaptain2Name] = useState("Captain 2");
+	const [captainsInput, setCaptainsInput] = useState("");
 	const [captain1Budget, setCaptain1Budget] = useState(100);
 	const [captain2Budget, setCaptain2Budget] = useState(100);
 	const [captain1Roster, setCaptain1Roster] = useState<Player[]>([]);
@@ -72,9 +74,15 @@ export default function Home() {
 	const [timeRemaining, setTimeRemaining] = useState(10);
 	const [timerActive, setTimerActive] = useState(false);
 	const [previousPlayer, setPreviousPlayer] = useState<Player | null>(null);
-	const [timerIntervalRef, setTimerIntervalRef] = useState<NodeJS.Timeout | null>(null);
-	const gavelAudio = useRef<HTMLAudioElement | null>(
+	const timerIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+	const gavelAudioRef = useRef<HTMLAudioElement | null>(
 		typeof Audio !== "undefined" ? new Audio("/gavel.mp3") : null
+	);
+	const celebrationAudioRef = useRef<HTMLAudioElement | null>(
+		typeof Audio !== "undefined" ? new Audio("/celebration.mp3") : null
+	);
+	const tickTickAudio = useRef<HTMLAudioElement | null>(
+		typeof Audio !== "undefined" ? new Audio("/tick.mp3") : null
 	);
  	const highlightTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 	const countFlashTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -83,6 +91,11 @@ export default function Home() {
 	const [isTimerExtendFlashActive, setIsTimerExtendFlashActive] = useState(false);
 	const [bidTimestamps, setBidTimestamps] = useState<number[]>([]);
 	const [isFinalScreenOpen, setIsFinalScreenOpen] = useState(false);
+	const [isRemainingPoolOpen, setIsRemainingPoolOpen] = useState(false);
+	const [remainingSearch, setRemainingSearch] = useState("");
+	const [hasEnteredDashboard, setHasEnteredDashboard] = useState(false);
+	const timerExpiryInFlightRef = useRef(false);
+	const audioCtxRef = useRef<AudioContext | null>(null);
 
 	useEffect(() => {
 		console.log("NEXT_PUBLIC_ADMIN_SECRET_KEY:", process.env.NEXT_PUBLIC_ADMIN_SECRET_KEY);
@@ -124,6 +137,40 @@ export default function Home() {
 			return !player.isSold && !unavailableNames.has(normalizedName);
 		});
 	}, [playerPool, captain1Roster, captain2Roster, unsoldPlayers]);
+
+	const remainingPlayers = useMemo(() => {
+		const currentPlayerName = currentPlayer?.name.trim().toLowerCase();
+
+		return playerPool.filter((player) => {
+			const playerName = player.name.trim().toLowerCase();
+			const isInBiddingWindow = Boolean(currentPlayerName) && playerName === currentPlayerName;
+
+			return !player.isSold && !isInBiddingWindow;
+		});
+	}, [playerPool, currentPlayer]);
+
+	const filteredRemainingPlayers = useMemo(() => {
+		const query = remainingSearch.trim().toLowerCase();
+		if (!query) {
+			return remainingPlayers;
+		}
+
+		return remainingPlayers.filter((player) => {
+			const name = player.name.toLowerCase();
+			const position = String(player.position || "").toLowerCase();
+			return name.includes(query) || position.includes(query);
+		});
+	}, [remainingPlayers, remainingSearch]);
+
+	const groupedRemainingPlayers = useMemo(() => {
+		const groups: Record<PositionFilter, Player[]> = { Att: [], Mid: [], Def: [] };
+
+		for (const player of filteredRemainingPlayers) {
+			groups[toThreeCategory(player.category || player.position)].push(player);
+		}
+
+		return groups;
+	}, [filteredRemainingPlayers]);
 
 	const hasAuctionActivity =
 		historyLog.length > 0 || captain1Roster.length > 0 || captain2Roster.length > 0;
@@ -203,15 +250,66 @@ export default function Home() {
 		setLoginError("Incorrect Password. Access Denied.");
 	}
 
-	function playGavel() {
+	function stopCelebrationAudio() {
+		if (!celebrationAudioRef.current) {
+			return;
+		}
+
+		celebrationAudioRef.current.pause();
+		celebrationAudioRef.current.currentTime = 0;
+	}
+
+	function playSoldAudioSequence() {
 		try {
-			if (!gavelAudio.current) {
+			const gavel = gavelAudioRef.current;
+			if (!gavel) {
 				return;
 			}
+			const celebration = celebrationAudioRef.current;
 
-			gavelAudio.current.currentTime = 0;
-			void gavelAudio.current.play().catch(() => {
-				// Ignore autoplay restrictions or missing audio file.
+			stopCelebrationAudio();
+			gavel.pause();
+			gavel.currentTime = 0;
+			gavel.onended = () => {
+				if (!celebration) {
+					gavel.onended = null;
+					return;
+				}
+
+				const confettiColors = ["#3B82F6", "#22C55E", "#F59E0B", "#EF4444", "#A855F7"];
+				void confetti({
+					particleCount: 150,
+					spread: 70,
+					angle: 60,
+					origin: { x: 0.1, y: 1 },
+					colors: confettiColors,
+				});
+				void confetti({
+					particleCount: 150,
+					spread: 70,
+					angle: 120,
+					origin: { x: 0.9, y: 1 },
+					colors: confettiColors,
+				});
+
+				celebration.volume = 1.0;
+				console.log("Attempting to play celebration sound...");
+				celebration.currentTime = 0;
+				void celebration.play().catch((err) => {
+					console.error("Audio Play Error:", err);
+				});
+				gavel.onended = null;
+			};
+
+			void gavel.play().catch(() => {
+				// If gavel cannot play, try celebration directly.
+				if (celebration) {
+					celebration.currentTime = 0;
+					void celebration.play().catch(() => {
+						// Ignore autoplay restrictions or missing audio file.
+					});
+				}
+				gavel.onended = null;
 			});
 		} catch {
 			// Never block auction flow if audio cannot initialize.
@@ -230,46 +328,67 @@ export default function Home() {
 		}
 	}
 
+	function playTick() {
+		try {
+			if (tickTickAudio.current) {
+				tickTickAudio.current.currentTime = 0;
+				void tickTickAudio.current.play().catch(() => {
+					// Fall back to synthesized tick when media playback fails.
+				});
+				return;
+			}
+
+			if (typeof window === "undefined") {
+				return;
+			}
+
+			const Ctx = window.AudioContext || (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+			if (!Ctx) {
+				return;
+			}
+
+			if (!audioCtxRef.current) {
+				audioCtxRef.current = new Ctx();
+			}
+
+			const ctx = audioCtxRef.current;
+			if (ctx.state === "suspended") {
+				void ctx.resume();
+			}
+
+			const oscillator = ctx.createOscillator();
+			const gain = ctx.createGain();
+
+			oscillator.type = "square";
+			oscillator.frequency.setValueAtTime(1200, ctx.currentTime);
+			gain.gain.setValueAtTime(0.0001, ctx.currentTime);
+			gain.gain.exponentialRampToValueAtTime(0.08, ctx.currentTime + 0.01);
+			gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.09);
+
+			oscillator.connect(gain);
+			gain.connect(ctx.destination);
+
+			oscillator.start(ctx.currentTime);
+			oscillator.stop(ctx.currentTime + 0.1);
+		} catch {
+			// Never block timer flow for optional cue.
+		}
+	}
+
+	function resetTickAudio() {
+		if (!tickTickAudio.current) {
+			return;
+		}
+
+		tickTickAudio.current.pause();
+		tickTickAudio.current.currentTime = 0;
+	}
+
 	function normalizePlayerCategory(player: Player): Player {
 		return {
 			...player,
 			category: toThreeCategory(player.category || player.position),
 		};
-	}
-
-	async function downloadSquad(captainId: CaptainSide) {
-		if (typeof window === "undefined") {
-			return;
-		}
-
-		const targetId = captainId === "captain1" ? "captain-1-card" : "captain-2-card";
-		const target = document.getElementById(targetId);
-
-		if (!target) {
-			setStatusMessage("Unable to capture squad panel right now.");
-			return;
-		}
-
-		try {
-			const canvas = await html2canvas(target, {
-				backgroundColor: null,
-				scale: 2,
-				useCORS: true,
-				allowTaint: true,
-				logging: true,
-			});
-
-			const imageUrl = canvas.toDataURL("image/png");
-			const link = document.createElement("a");
-			const squadName = captainId === "captain1" ? captain1Name : captain2Name;
-			link.href = imageUrl;
-			link.download = `${squadName.replace(/\s+/g, "_")}_Squad.png`;
-			link.click();
-			setStatusMessage(`Downloaded ${squadName} squad card.`);
-		} catch (err) {
-			console.error("Canvas Error:", err);
-			setStatusMessage("Could not download squad card. Please try again.");
-		}
 	}
 
 	useEffect(() => {
@@ -313,14 +432,29 @@ export default function Home() {
 			setUnsoldPlayers(Array.isArray(parsed.unsoldPlayers) ? parsed.unsoldPlayers : []);
 			setHistoryLog(
 				Array.isArray(parsed.history)
-					? parsed.history.map((item: any, index: number) => ({
-						id: String(item?.id || `${item?.playerName || "player"}-${Date.now()}-${index}`),
-						playerName: String(item?.playerName || "Unknown"),
-						price: Number(item?.price || 0),
-						captainName: String(item?.captainName || item?.buyer || "Unknown"),
-						captainSide: item?.captainSide === "captain2" ? "captain2" : "captain1",
-						timestamp: String(item?.timestamp || new Date().toISOString()),
-					}))
+					? parsed.history.map((item: unknown, index: number) => {
+						const record =
+							typeof item === "object" && item !== null
+								? (item as {
+									id?: unknown;
+									playerName?: unknown;
+									price?: unknown;
+									captainName?: unknown;
+									captainSide?: unknown;
+									timestamp?: unknown;
+									buyer?: unknown;
+								})
+								: {};
+
+						return {
+							id: String(record.id || `${record.playerName || "player"}-${Date.now()}-${index}`),
+							playerName: String(record.playerName || "Unknown"),
+							price: Number(record.price || 0),
+							captainName: String(record.captainName || record.buyer || "Unknown"),
+							captainSide: record.captainSide === "captain2" ? "captain2" : "captain1",
+							timestamp: String(record.timestamp || new Date().toISOString()),
+						};
+					})
 					: []
 			);
 		} catch {
@@ -368,9 +502,19 @@ export default function Home() {
 	]);
 
 	useEffect(() => {
-		if (gavelAudio.current) {
-			gavelAudio.current.preload = "auto";
-			gavelAudio.current.load();
+		if (gavelAudioRef.current) {
+			gavelAudioRef.current.preload = "auto";
+			gavelAudioRef.current.load();
+		}
+		if (celebrationAudioRef.current) {
+			celebrationAudioRef.current.preload = "auto";
+			celebrationAudioRef.current.volume = 1.0;
+			celebrationAudioRef.current.load();
+		}
+		console.log("celebrationAudioRef.current initialized:", celebrationAudioRef.current !== null);
+		if (tickTickAudio.current) {
+			tickTickAudio.current.preload = "auto";
+			tickTickAudio.current.load();
 		}
 
 		return () => {
@@ -383,11 +527,18 @@ export default function Home() {
 			if (timerExtendFlashTimeoutRef.current) {
 				clearTimeout(timerExtendFlashTimeoutRef.current);
 			}
-			if (timerIntervalRef) {
-				clearInterval(timerIntervalRef);
+			if (timerIntervalRef.current) {
+				clearInterval(timerIntervalRef.current);
+			}
+			if (gavelAudioRef.current) {
+				gavelAudioRef.current.onended = null;
+			}
+			stopCelebrationAudio();
+			if (audioCtxRef.current && audioCtxRef.current.state !== "closed") {
+				void audioCtxRef.current.close();
 			}
 		};
-	}, [timerIntervalRef]);
+	}, []);
 
 	function triggerTimerExtendFlash() {
 		setIsTimerExtendFlashActive(true);
@@ -416,23 +567,147 @@ export default function Home() {
 	// Counts are derived reactively via useMemo from playerPool + roster/unsold state.
 
 	// Handle timer countdown
+	const handleTimerExpired = useCallback(async (expiredPlayer: Player) => {
+		if (!expiredPlayer) {
+			timerExpiryInFlightRef.current = false;
+			return;
+		}
+
+		resetTickAudio();
+
+		const hasHighestBid = roundedBid > 0 && Boolean(lastBidder) && Boolean(lastBidderSide);
+
+		try {
+			if (hasHighestBid && lastBidder && lastBidderSide) {
+				console.log("Fetching from:", API_URL);
+				const soldResponse = await fetch(`${API_URL}/sold`, {
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+						"x-admin-key": adminKey,
+					},
+					body: JSON.stringify({
+						name: expiredPlayer.name,
+						bidderName: lastBidder,
+						amount: roundedBid,
+					}),
+				});
+
+				const soldData = await soldResponse.json();
+
+				if (!soldResponse.ok) {
+					throw new Error(soldData.error || "Failed to auto-sell player");
+				}
+
+				playSoldAudioSequence();
+
+				const soldPlayer = {
+					...normalizePlayerCategory(expiredPlayer),
+					isSold: true,
+					soldPrice: roundedBid,
+				};
+
+				if (lastBidderSide === "captain1") {
+					setCaptain1Budget((prev) => Number((prev - roundedBid).toFixed(1)));
+					setCaptain1Roster((prev) => [...prev, soldPlayer]);
+				} else {
+					setCaptain2Budget((prev) => Number((prev - roundedBid).toFixed(1)));
+					setCaptain2Roster((prev) => [...prev, soldPlayer]);
+				}
+
+				setPlayerPool((prev) =>
+					prev.map((player) => {
+						if (player.name.trim().toLowerCase() !== expiredPlayer.name.trim().toLowerCase()) {
+							return player;
+						}
+
+						return {
+							...player,
+							category: toThreeCategory(player.category || player.position),
+							isSold: true,
+							soldPrice: roundedBid,
+						};
+					})
+				);
+
+				setHistoryLog((prev) => [
+					...prev,
+					{
+						id: `${expiredPlayer.name}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+						playerName: expiredPlayer.name,
+						price: roundedBid,
+						captainName: lastBidder,
+						captainSide: lastBidderSide,
+						timestamp: new Date().toISOString(),
+					},
+				]);
+
+				setStatusMessage(
+					`${expiredPlayer.name} auto-sold to ${lastBidder} for ${formatMoneyMillion(roundedBid)} (timer expired).`
+				);
+				triggerCountFlash();
+				setCurrentPlayer(null);
+				setCurrentBid(0);
+				setLastBidder(null);
+				setLastBidderSide(null);
+				setBidTimestamps([]);
+				setPreviousPlayer(null);
+				return;
+			}
+
+			console.log("Fetching from:", API_URL);
+			const response = await fetch(`${API_URL}/sold`, {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					"x-admin-key": adminKey,
+				},
+				body: JSON.stringify({ name: expiredPlayer.name, timerExpired: true }),
+			});
+
+			const data = await response.json();
+
+			if (!response.ok) {
+				throw new Error(data.error || "Failed to mark player as unsold");
+			}
+
+			// Add to unsold list
+			setUnsoldPlayers((prev) => [...prev, normalizePlayerCategory(expiredPlayer)]);
+			setStatusMessage(`${expiredPlayer.name} returned to unsold pool (timer expired).`);
+			setCurrentPlayer(null);
+			setCurrentBid(0);
+			setLastBidder(null);
+			setLastBidderSide(null);
+			setBidTimestamps([]);
+			setPreviousPlayer(null);
+		} catch (error) {
+			setStatusMessage(error instanceof Error ? error.message : "Failed to mark unsold");
+		} finally {
+			timerExpiryInFlightRef.current = false;
+		}
+	}, [adminKey, roundedBid, lastBidder, lastBidderSide]);
+
 	useEffect(() => {
 		if (!timerActive || !currentPlayer) {
 			return;
 		}
 
-		if (timerIntervalRef) {
-			clearInterval(timerIntervalRef);
+		if (timerIntervalRef.current) {
+			clearInterval(timerIntervalRef.current);
 		}
 
 		const interval = setInterval(() => {
 			setTimeRemaining((prev) => {
 				const newTime = prev - 1;
 
+				if (newTime <= 5 && newTime > 0) {
+					playTick();
+				}
+
 				if (newTime <= 0) {
-					// Timer expired - if no bid was made, move to unsold
-					if (!lastBidder) {
-						handleTimerExpired();
+					if (!timerExpiryInFlightRef.current) {
+						timerExpiryInFlightRef.current = true;
+						handleTimerExpired(currentPlayer);
 					}
 					setTimerActive(false);
 					return 10;
@@ -442,10 +717,10 @@ export default function Home() {
 			});
 		}, 1000);
 
-		setTimerIntervalRef(interval);
+		timerIntervalRef.current = interval;
 
 		return () => clearInterval(interval);
-	}, [timerActive, currentPlayer, lastBidder]);
+	}, [timerActive, currentPlayer, handleTimerExpired]);
 
 	function triggerLastBidderHighlight() {
 		setIsLastBidderHighlighted(false);
@@ -461,39 +736,6 @@ export default function Home() {
 		highlightTimeoutRef.current = setTimeout(() => {
 			setIsLastBidderHighlighted(false);
 		}, 700);
-	}
-
-	async function handleTimerExpired() {
-		if (!currentPlayer) return;
-
-		try {
-			console.log("Fetching from:", API_URL);
-			const response = await fetch(`${API_URL}/sold`, {
-				method: "POST",
-				headers: {
-					"Content-Type": "application/json",
-					"x-admin-key": adminKey,
-				},
-				body: JSON.stringify({ name: currentPlayer.name, timerExpired: true }),
-			});
-
-			const data = await response.json();
-
-			if (!response.ok) {
-				throw new Error(data.error || "Failed to mark player as unsold");
-			}
-
-			// Add to unsold list
-			setUnsoldPlayers((prev) => [...prev, normalizePlayerCategory(currentPlayer)]);
-			setStatusMessage(`${currentPlayer.name} returned to unsold pool (timer expired).`);
-			setCurrentPlayer(null);
-			setCurrentBid(0);
-			setLastBidder(null);
-			setLastBidderSide(null);
-			setPreviousPlayer(null);
-		} catch (error) {
-			setStatusMessage(error instanceof Error ? error.message : "Failed to mark unsold");
-		}
 	}
 
 	function handleUndoPlayer() {
@@ -514,6 +756,7 @@ export default function Home() {
 	}
 
 	function handleResetAuction() {
+		stopCelebrationAudio();
 		setCaptain1Name("Captain 1");
 		setCaptain2Name("Captain 2");
 		setCaptain1Budget(100);
@@ -534,7 +777,7 @@ export default function Home() {
 		setTimerActive(false);
 		setPreviousPlayer(null);
 		localStorage.removeItem(AUCTION_STORAGE_KEY);
-		if (timerIntervalRef) clearInterval(timerIntervalRef);
+		if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
 		setStatusMessage("Auction reset. Upload an Excel sheet to start a fresh match.");
 	}
 
@@ -591,6 +834,11 @@ export default function Home() {
 		try {
 			const formData = new FormData();
 			formData.append("file", file);
+			const captains = captainsInput
+				.split(",")
+				.map((name) => name.trim())
+				.filter((name) => name.length > 0);
+			formData.append("captains", captains.join(","));
 
 			console.log("Fetching from:", API_URL);
 			const response = await fetch(`${API_URL}/upload`, {
@@ -638,6 +886,7 @@ export default function Home() {
 	}
 
 	async function handleDrawPlayer(position?: PositionFilter) {
+		stopCelebrationAudio();
 		setDrawing(true);
 		setStatusMessage(position ? `Drawing an unsold ${position} player...` : "Drawing a random unsold player...");
 
@@ -689,20 +938,22 @@ export default function Home() {
 		const nextBid = roundedBid === 0 ? 1 : Number((roundedBid + 0.5).toFixed(1));
 
 		if (bidderBudget < nextBid) {
-			setStatusMessage(`${bidderName} cannot bid ${nextBid.toFixed(1)} due to insufficient balance.`);
+			setStatusMessage(`${bidderName} cannot bid ${formatMoneyMillion(nextBid)} due to insufficient balance.`);
 			return;
 		}
 
 		setCurrentBid(nextBid);
 		setLastBidder(bidderName);
 		setLastBidderSide(side);
+		stopCelebrationAudio();
+		resetTickAudio();
 		setBidTimestamps((prev) => [...prev.slice(-3), Date.now()]);
 		triggerLastBidderHighlight();
 
 		if (roundedBid === 0) {
 			setTimeRemaining(10);
 			setTimerActive(true);
-			setStatusMessage(`${bidderName} opened at 1.0. Timer started at 10s.`);
+			setStatusMessage(`${bidderName} opened at ${formatMoneyMillion(1)}. Timer started at 10s.`);
 			return;
 		}
 
@@ -710,7 +961,7 @@ export default function Home() {
 		setTimerActive(true);
 		triggerTimerExtendFlash();
 		playBlip();
-		setStatusMessage(`${bidderName} raised the bid to ${nextBid.toFixed(1)}. Timer extended to 20s.`);
+		setStatusMessage(`${bidderName} raised the bid to ${formatMoneyMillion(nextBid)}. Timer extended to 20s.`);
 	}
 
 	function handleReduceBid() {
@@ -727,7 +978,7 @@ export default function Home() {
 		}
 
 		setCurrentBid(newBid);
-		setStatusMessage(`Bid reduced to ${newBid.toFixed(1)}.`);
+		setStatusMessage(`Bid reduced to ${formatMoneyMillion(newBid)}.`);
 	}
 
 	function handleStartTimer() {
@@ -746,60 +997,7 @@ export default function Home() {
 		setStatusMessage("Timer started! 10 seconds to first bid.");
 	}
 
-	function handleExportToExcel(captainName: string, roster: Player[]) {
-		if (roster.length === 0) {
-			setStatusMessage(`${captainName}'s squad is empty. Nothing to export.`);
-			return;
-		}
-
-		const sortedRoster = sortRoster(roster);
-
-		// Prepare data for export
-		const exportData = sortedRoster.map((player) => ({
-			Name: player.name,
-			Position: toShortForm(player.position),
-			"Price Paid": player.soldPrice ?? 0,
-			"Last Match Stats": player.lastMatchStats || "N/A",
-		}));
-
-		// Create workbook and worksheet
-		const worksheet = XLSX.utils.json_to_sheet(exportData);
-		const workbook = XLSX.utils.book_new();
-		XLSX.utils.book_append_sheet(workbook, worksheet, "Squad");
-
-		// Style the header row
-		const headerRange = XLSX.utils.decode_range(worksheet["!ref"] || "A1");
-		for (let C = headerRange.s.c; C <= headerRange.e.c; ++C) {
-			const address = XLSX.utils.encode_col(C) + "1";
-			if (!worksheet[address]) continue;
-			worksheet[address].s = {
-				font: { bold: true, color: { rgb: "FFFFFF" } },
-				fill: { fgColor: { rgb: "366092" } },
-				alignment: { horizontal: "center", vertical: "center" },
-			};
-		}
-
-		// Auto-fit column widths
-		const colWidths = [
-			{ wch: 25 }, // Name
-			{ wch: 12 }, // Position
-			{ wch: 12 }, // Price Paid
-			{ wch: 25 }, // Last Match Stats
-		];
-		worksheet["!cols"] = colWidths;
-
-		// Generate filename with captain name and timestamp
-		const timestamp = new Date().toLocaleDateString("en-IN").replace(/\//g, "-");
-		const filename = `${captainName.replace(/\s+/g, "_")}_Squad_${timestamp}.xlsx`;
-
-		// Trigger download
-		XLSX.writeFile(workbook, filename);
-		setStatusMessage(`Exported ${captainName}'s squad to ${filename}`);
-	}
-
 	async function handleSold() {
-		playGavel();
-
 		if (!currentPlayer) {
 			setStatusMessage("Draw a player before marking sold.");
 			return;
@@ -819,6 +1017,8 @@ export default function Home() {
 		}
 
 		setSelling(true);
+		setTimerActive(false);
+		resetTickAudio();
 
 		try {
 			console.log("Fetching from:", API_URL);
@@ -828,7 +1028,11 @@ export default function Home() {
 					"Content-Type": "application/json",
 					"x-admin-key": adminKey,
 				},
-				body: JSON.stringify({ name: currentPlayer.name }),
+				body: JSON.stringify({
+					name: currentPlayer.name,
+					bidderName: buyerName,
+					amount: roundedBid,
+				}),
 			});
 
 			const data = await response.json();
@@ -836,6 +1040,8 @@ export default function Home() {
 			if (!response.ok) {
 				throw new Error(data.error || "Failed to mark player as sold");
 			}
+
+			playSoldAudioSequence();
 
 			const soldPlayer = {
 				...normalizePlayerCategory(currentPlayer),
@@ -879,7 +1085,7 @@ export default function Home() {
 				},
 			]);
 
-			setStatusMessage(`${currentPlayer.name} sold to ${buyerName} for ${roundedBid.toFixed(1)}.`);
+			setStatusMessage(`${currentPlayer.name} sold to ${buyerName} for ${formatMoneyMillion(roundedBid)}.`);
 			triggerCountFlash();
 			if (isFinalSale) {
 				setIsFinalScreenOpen(true);
@@ -888,6 +1094,7 @@ export default function Home() {
 			setCurrentBid(0);
 			setLastBidder(null);
 			setLastBidderSide(null);
+			setTimeRemaining(10);
 			setBidTimestamps([]);
 			setIsLastBidderHighlighted(false);
 		} catch (error) {
@@ -895,6 +1102,57 @@ export default function Home() {
 		} finally {
 			setSelling(false);
 		}
+	}
+
+	function handleExportExcel(soldPlayers: Player[]) {
+		if (soldPlayers.length === 0) {
+			setStatusMessage("No sold players available to export.");
+			return;
+		}
+
+		const exportRows = soldPlayers.map((player) => ({
+			Name: player.name,
+			Category: toThreeCategory(player.category || player.position),
+			Position: toShortForm(player.position),
+			"Price Paid": player.soldPrice ?? 0,
+			AvgRating: player.avgRating ?? 0,
+			LastMatchRating: player.lastMatchRating ?? "N/A",
+			"Last Match Stats": player.lastMatchStats ?? "N/A",
+		}));
+
+		const worksheet = XLSX.utils.json_to_sheet(exportRows);
+		const workbook = XLSX.utils.book_new();
+		XLSX.utils.book_append_sheet(workbook, worksheet, "Final Squads");
+		XLSX.writeFile(workbook, "Auction_Final_Squads.xlsx");
+		setStatusMessage("Final squads exported to Auction_Final_Squads.xlsx");
+	}
+
+	const captain1FinalCounts = useMemo(() => getSquadCounts(sortedCaptain1FinalRoster), [sortedCaptain1FinalRoster]);
+	const captain2FinalCounts = useMemo(() => getSquadCounts(sortedCaptain2FinalRoster), [sortedCaptain2FinalRoster]);
+
+	if (!hasEnteredDashboard) {
+		return (
+			<main
+				className={`${bodyFont.className} min-h-screen bg-gradient-to-b from-slate-100 via-white to-cyan-50 text-slate-900`}
+			>
+				<div className="flex min-h-screen items-center justify-center px-4">
+					<div className="w-full max-w-2xl rounded-3xl border border-cyan-200 bg-white/90 p-10 text-center shadow-2xl">
+						<h1 className={`${displayFont.className} text-5xl tracking-wide text-slate-900 sm:text-6xl`}>
+							Football Auction Dashboard
+						</h1>
+						<p className="mt-4 text-sm font-semibold uppercase tracking-[0.2em] text-cyan-700">
+							Live Bidding Control Room
+						</p>
+						<button
+							onClick={() => setHasEnteredDashboard(true)}
+							className="mt-8 rounded-2xl bg-gradient-to-r from-cyan-600 to-blue-600 px-8 py-4 text-base font-extrabold uppercase tracking-wide text-white transition hover:from-cyan-500 hover:to-blue-500"
+						>
+							Enter Auction Dashboard
+						</button>
+					</div>
+				</div>
+			</main>
+		);
 	}
 
 	return (
@@ -944,6 +1202,15 @@ export default function Home() {
 				{/* TOP SECTION: Player Spotlight Banner */}
 			<section className="sticky top-0 z-40 w-full border-b-4 border-yellow-400 bg-slate-900 px-4 py-3 sm:px-6 lg:px-8">
 				<div className="mx-auto max-w-7xl">
+					<div className="mb-3 flex items-center justify-between gap-3">
+						<p className="text-xs font-bold uppercase tracking-[0.2em] text-slate-300">Player Info</p>
+						<button
+							onClick={() => setIsRemainingPoolOpen(true)}
+							className="rounded-lg border border-blue-500 px-3 py-1 text-xs font-bold uppercase tracking-wide text-blue-500 transition hover:bg-blue-500/10"
+						>
+							View Remaining Pool
+						</button>
+					</div>
 					{/* Total Players Remaining Counter */}
 					<div className="mb-4 flex items-center justify-between rounded-lg border border-cyan-400/50 bg-cyan-900/20 px-3 py-2">
 						<p className="text-xs font-bold uppercase tracking-[0.15em] text-cyan-300">Total Remaining</p>
@@ -971,6 +1238,7 @@ export default function Home() {
 									<div className="mt-3 flex flex-wrap gap-4 text-lg font-semibold text-yellow-200">
 										<span>Position: {toShortForm(currentPlayer.position)}</span>
 										<span>Category: {toShortForm(currentPlayer.category)}</span>
+										<span>Matches Played: {currentPlayer.matchesPlayed ?? "N/A"}</span>
 										<span>Avg Rating: {currentPlayer.avgRating}</span>
 										<span>
 											Last Match Rating: {currentPlayer.lastMatchRating !== undefined ? currentPlayer.lastMatchRating : "N/A"}
@@ -1018,8 +1286,6 @@ export default function Home() {
 								requiredSquadSize={REQUIRED_SQUAD_SIZE}
 								tone="left"
 								cardId="captain-1-card"
-								onExport={() => handleExportToExcel(captain1Name, captain1Roster)}
-								onDownloadSquad={() => downloadSquad("captain1")}
 							/>
 
 							{/* CENTER COLUMN: Bidding Dashboard */}
@@ -1032,7 +1298,7 @@ export default function Home() {
 										Current Bid {isHotBidding ? "🔥 HOT" : ""}
 									</p>
 									<p className={`${displayFont.className} mt-3 text-center text-6xl font-extrabold text-emerald-400`}>
-										{roundedBid.toFixed(1)}
+										{formatMoneyMillion(roundedBid)}
 									</p>
 								</div>
 
@@ -1129,8 +1395,6 @@ export default function Home() {
 								requiredSquadSize={REQUIRED_SQUAD_SIZE}
 								tone="right"
 								cardId="captain-2-card"
-								onExport={() => handleExportToExcel(captain2Name, captain2Roster)}
-								onDownloadSquad={() => downloadSquad("captain2")}
 							/>
 						</div>
 					</div>
@@ -1183,6 +1447,21 @@ export default function Home() {
 									className="rounded-xl bg-rose-600 px-4 py-2 text-sm font-bold text-white transition hover:bg-rose-500 disabled:cursor-not-allowed disabled:opacity-60"
 								>
 									Reset Auction
+														<div className="mb-8 w-full rounded-2xl border border-slate-600 bg-slate-900/50 p-4">
+															<label className="block text-xs font-bold uppercase tracking-[0.2em] text-slate-300">
+																Captains (comma-separated)
+															</label>
+															<input
+																type="text"
+																value={captainsInput}
+																onChange={(event) => setCaptainsInput(event.target.value)}
+																placeholder="e.g. Lionel Messi, Cristiano Ronaldo"
+																className="mt-2 w-full rounded-xl border border-slate-500 bg-slate-800 px-3 py-2 text-sm font-semibold text-white outline-none transition focus:border-cyan-400 focus:ring-2 focus:ring-cyan-500/20"
+															/>
+															<p className="mt-2 text-xs text-slate-400">
+																Players listed here will be excluded from the auction pool at upload.
+															</p>
+														</div>
 								</button>
 
 							</div>
@@ -1268,7 +1547,7 @@ export default function Home() {
 											<p className="text-sm font-bold text-yellow-300">{entry.playerName}</p>
 											<p className="text-xs text-slate-400">
 												Sold to <span className="text-cyan-300">{entry.captainName}</span> for{" "}
-												<span className="font-bold text-emerald-300">{entry.price.toFixed(1)}</span>
+												<span className="font-bold text-emerald-300">{formatMoneyMillion(entry.price)}</span>
 											</p>
 											<p className="text-[11px] text-slate-500">
 												{new Date(entry.timestamp).toLocaleString("en-IN")}
@@ -1310,63 +1589,160 @@ export default function Home() {
 						<div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
 							<div className="rounded-2xl border border-slate-700 bg-slate-800/70 p-5">
 								<h3 className={`${displayFont.className} text-3xl text-cyan-300`}>{captain1Name}</h3>
-								<p className="mt-2 text-sm text-slate-300">Total Expenditure: {captain1Summary.totalSpent.toFixed(1)}</p>
-								<p className="text-sm text-slate-300">Remaining Budget: {captain1Budget.toFixed(1)}</p>
+								<p className="mt-2 text-sm text-slate-300">Category Summary: Att {captain1FinalCounts.Att} | Mid {captain1FinalCounts.Mid} | Def {captain1FinalCounts.Def}</p>
+								<p className="text-sm text-slate-300">Total Expenditure: {formatMoneyMillion(captain1Summary.totalSpent)}</p>
+								<p className="text-sm text-slate-300">Remaining Budget: {formatMoneyMillion(captain1Budget)}</p>
 								<p className="text-sm text-slate-300">Squad: {captain1Roster.length}/{FINAL_SQUAD_SIZE}</p>
 
-								<div className="mt-4 space-y-2">
-									{Array.from({ length: FINAL_SQUAD_SIZE }, (_, index) => {
-										const player = sortedCaptain1FinalRoster[index];
-										if (!player) {
-											return (
-												<div
-													key={`c1-empty-${index}`}
-													className="rounded-lg border border-dashed border-slate-600 bg-slate-900/40 px-3 py-2 text-sm text-slate-400"
-												>
-													Slot {index + 1}: Empty
-												</div>
-											);
-										}
-
-										return (
-											<div key={`c1-${player.name}-${index}`} className="rounded-lg border border-slate-600 bg-slate-900/50 px-3 py-2">
-												<p className="text-sm font-bold text-white">{player.name}</p>
-												<p className="text-xs text-slate-300">{toThreeCategory(player.category || player.position)} • {(player.soldPrice ?? 0).toFixed(1)}</p>
-											</div>
-										);
-									})}
+								<div className="mt-4 overflow-x-auto rounded-lg border border-slate-700">
+									<table className="min-w-full text-left text-xs">
+										<thead className="bg-slate-900/70 text-slate-300">
+											<tr>
+												<th className="px-3 py-2">Player</th>
+												<th className="px-3 py-2">Cat</th>
+												<th className="px-3 py-2">Matches Played</th>
+												<th className="px-3 py-2">Price</th>
+											</tr>
+										</thead>
+										<tbody>
+											{sortedCaptain1FinalRoster.length === 0 ? (
+												<tr>
+													<td colSpan={4} className="px-3 py-3 text-slate-400">No players yet</td>
+												</tr>
+											) : (
+												sortedCaptain1FinalRoster.map((player, index) => (
+													<tr key={`c1-${player.name}-${index}`} className="border-t border-slate-700/70">
+														<td className="px-3 py-2 font-semibold text-white">{player.name}</td>
+														<td className="px-3 py-2 text-slate-300">{toThreeCategory(player.category || player.position)}</td>
+														<td className="px-3 py-2 text-slate-300">{player.matchesPlayed ?? "N/A"}</td>
+														<td className="px-3 py-2 font-semibold text-emerald-300">{formatMoneyMillion(player.soldPrice ?? 0)}</td>
+													</tr>
+												))
+											)}
+										</tbody>
+									</table>
 								</div>
+								<p className="mt-3 text-sm font-semibold text-cyan-200">Total Players: {sortedCaptain1FinalRoster.length}</p>
 							</div>
 
 							<div className="rounded-2xl border border-slate-700 bg-slate-800/70 p-5">
 								<h3 className={`${displayFont.className} text-3xl text-cyan-300`}>{captain2Name}</h3>
-								<p className="mt-2 text-sm text-slate-300">Total Expenditure: {captain2Summary.totalSpent.toFixed(1)}</p>
-								<p className="text-sm text-slate-300">Remaining Budget: {captain2Budget.toFixed(1)}</p>
+								<p className="mt-2 text-sm text-slate-300">Category Summary: Att {captain2FinalCounts.Att} | Mid {captain2FinalCounts.Mid} | Def {captain2FinalCounts.Def}</p>
+								<p className="text-sm text-slate-300">Total Expenditure: {formatMoneyMillion(captain2Summary.totalSpent)}</p>
+								<p className="text-sm text-slate-300">Remaining Budget: {formatMoneyMillion(captain2Budget)}</p>
 								<p className="text-sm text-slate-300">Squad: {captain2Roster.length}/{FINAL_SQUAD_SIZE}</p>
 
-								<div className="mt-4 space-y-2">
-									{Array.from({ length: FINAL_SQUAD_SIZE }, (_, index) => {
-										const player = sortedCaptain2FinalRoster[index];
-										if (!player) {
-											return (
-												<div
-													key={`c2-empty-${index}`}
-													className="rounded-lg border border-dashed border-slate-600 bg-slate-900/40 px-3 py-2 text-sm text-slate-400"
-												>
-													Slot {index + 1}: Empty
-												</div>
-											);
-										}
-
-										return (
-											<div key={`c2-${player.name}-${index}`} className="rounded-lg border border-slate-600 bg-slate-900/50 px-3 py-2">
-												<p className="text-sm font-bold text-white">{player.name}</p>
-												<p className="text-xs text-slate-300">{toThreeCategory(player.category || player.position)} • {(player.soldPrice ?? 0).toFixed(1)}</p>
-											</div>
-										);
-									})}
+								<div className="mt-4 overflow-x-auto rounded-lg border border-slate-700">
+									<table className="min-w-full text-left text-xs">
+										<thead className="bg-slate-900/70 text-slate-300">
+											<tr>
+												<th className="px-3 py-2">Player</th>
+												<th className="px-3 py-2">Cat</th>
+												<th className="px-3 py-2">Matches Played</th>
+												<th className="px-3 py-2">Price</th>
+											</tr>
+										</thead>
+										<tbody>
+											{sortedCaptain2FinalRoster.length === 0 ? (
+												<tr>
+													<td colSpan={4} className="px-3 py-3 text-slate-400">No players yet</td>
+												</tr>
+											) : (
+												sortedCaptain2FinalRoster.map((player, index) => (
+													<tr key={`c2-${player.name}-${index}`} className="border-t border-slate-700/70">
+														<td className="px-3 py-2 font-semibold text-white">{player.name}</td>
+														<td className="px-3 py-2 text-slate-300">{toThreeCategory(player.category || player.position)}</td>
+														<td className="px-3 py-2 text-slate-300">{player.matchesPlayed ?? "N/A"}</td>
+														<td className="px-3 py-2 font-semibold text-emerald-300">{formatMoneyMillion(player.soldPrice ?? 0)}</td>
+													</tr>
+												))
+											)}
+										</tbody>
+									</table>
 								</div>
+								<p className="mt-3 text-sm font-semibold text-cyan-200">Total Players: {sortedCaptain2FinalRoster.length}</p>
 							</div>
+							<div className="lg:col-span-2">
+								<button
+									onClick={() => handleExportExcel([...captain1Roster, ...captain2Roster])}
+									className="mt-2 inline-flex items-center gap-2 rounded-xl bg-green-700 px-5 py-3 text-sm font-extrabold uppercase tracking-wide text-white transition hover:bg-green-600"
+								>
+									<svg viewBox="0 0 24 24" className="h-4 w-4" fill="currentColor" aria-hidden="true">
+										<path d="M4 3a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10l8-8V5a2 2 0 0 0-2-2H4Zm9 2v7h7" />
+										<path d="M7 12h3v3H7zm0 4h3v3H7zm4-4h3v3h-3zm0 4h3v3h-3z" />
+									</svg>
+									Export to Excel
+								</button>
+							</div>
+						</div>
+					</div>
+				</div>
+			)}
+
+			{isRemainingPoolOpen && (
+				<div className="fixed inset-0 z-[85] bg-slate-950/90 px-4 py-6 backdrop-blur-sm sm:px-8">
+					<div className="mx-auto flex h-full max-w-4xl flex-col rounded-2xl border border-blue-500/40 bg-slate-900 p-5 text-white shadow-2xl sm:p-6">
+						<div className="flex items-start justify-between gap-3">
+							<div>
+								<h3 className={`${displayFont.className} text-3xl tracking-wide text-blue-300 sm:text-4xl`}>
+									Remaining Player Pool
+								</h3>
+								<p className="mt-1 text-xs uppercase tracking-[0.15em] text-slate-400">
+									War Room Lookup
+								</p>
+							</div>
+							<button
+								onClick={() => {
+									setIsRemainingPoolOpen(false);
+									setRemainingSearch("");
+								}}
+								className="rounded-lg bg-slate-700 px-3 py-2 text-sm font-extrabold text-white transition hover:bg-slate-600"
+							>
+								Close
+							</button>
+						</div>
+
+						<div className="mt-4">
+							<input
+								type="text"
+								value={remainingSearch}
+								onChange={(event) => setRemainingSearch(event.target.value)}
+								placeholder="Search by player name or position"
+								className="w-full rounded-lg border border-slate-600 bg-slate-800 px-3 py-2 text-sm text-white outline-none transition focus:border-blue-400"
+							/>
+						</div>
+
+						<div className="mt-4 flex-1 overflow-y-auto rounded-xl border border-slate-700 p-3">
+							{filteredRemainingPlayers.length === 0 ? (
+								<p className="text-sm text-slate-400">No matching remaining players found.</p>
+							) : (
+								<div className="space-y-4">
+									{(["Att", "Mid", "Def"] as PositionFilter[]).map((category) => (
+										<div key={category}>
+											<p className="mb-2 text-xs font-bold uppercase tracking-[0.15em] text-blue-300">
+												{category === "Att" ? "Attackers" : category === "Mid" ? "Midfielders" : "Defenders"} ({groupedRemainingPlayers[category].length})
+											</p>
+											<div className="space-y-1">
+												{groupedRemainingPlayers[category].length === 0 ? (
+													<p className="rounded-md border border-dashed border-slate-700 px-3 py-2 text-xs text-slate-500">
+														No players in this category.
+													</p>
+												) : (
+													groupedRemainingPlayers[category].map((player) => (
+														<div
+															key={`remaining-${category}-${player.name}-${player.position}`}
+															className="flex items-center justify-between rounded-md border border-slate-700 bg-slate-800/60 px-3 py-2 text-sm"
+														>
+															<span className="font-semibold text-white">{player.name}</span>
+															<span className="text-slate-400">{toShortForm(player.position)}</span>
+														</div>
+													))
+												)}
+											</div>
+										</div>
+									))}
+								</div>
+							)}
 						</div>
 					</div>
 				</div>
@@ -1383,8 +1759,6 @@ function BattlegroundPanel({
 	requiredSquadSize,
 	tone,
 	cardId,
-	onExport,
-	onDownloadSquad,
 }: {
 	captainName: string;
 	onCaptainNameChange: (name: string) => void;
@@ -1393,8 +1767,6 @@ function BattlegroundPanel({
 	requiredSquadSize: number;
 	tone: "left" | "right";
 	cardId: string;
-	onExport: () => void;
-	onDownloadSquad: () => void;
 }) {
 	const isLeft = tone === "left";
 	const bgColor = isLeft ? "bg-white" : "bg-black";
@@ -1469,22 +1841,10 @@ function BattlegroundPanel({
 		<div className={`flex-1 rounded-lg border ${borderColor} px-3 py-3`}>
 			<div className="flex items-center justify-between gap-2">
 				<p className={`text-xs font-bold uppercase tracking-[0.15em] ${labelColor}`}>Squad ({roster.length})</p>
-				{roster.length > 0 && (
-					<button
-						onClick={onExport}
-						className={`rounded-md px-2 py-1 text-xs font-bold uppercase tracking-wide transition ${
-							isLeft
-								? "bg-teal-500 text-white hover:bg-teal-600"
-								: "bg-teal-600 text-white hover:bg-teal-500"
-						}`}
-					>
-						Export
-					</button>
-				)}
 			</div>
 
 			<div className="mt-2 max-h-[420px] space-y-1 overflow-y-auto pr-1">
-				{sortedRoster.length === 0 ? (
+				{rosterWithPurchaseNumber.length === 0 ? (
 					<p
 						className={`rounded-lg border border-dashed ${borderColor} px-2 py-2 text-xs ${
 							isLeft ? "bg-slate-50 text-slate-500" : "bg-slate-900/40 text-slate-400"
@@ -1493,19 +1853,24 @@ function BattlegroundPanel({
 						No players yet
 					</p>
 				) : (
-					sortedRoster.map((player, index) => (
+					rosterWithPurchaseNumber.map(({ player, purchaseNumber }, index) => (
 						<div
 							key={`${player.name}-${player.position}-${index}`}
 							className={`rounded-lg border ${borderColor} px-2 py-2 text-xs ${
 								isLeft ? "bg-slate-50 text-slate-900" : "bg-slate-900/50 text-white"
 							}`}
 						>
-							<p className="font-bold">{player.name}</p>
+							<div className="flex items-center gap-2">
+								<span className="flex h-5 w-5 items-center justify-center rounded-full bg-green-500 text-[10px] font-extrabold text-white">
+									{purchaseNumber}
+								</span>
+								<p className="font-bold">{player.name}</p>
+							</div>
 							<p className={isLeft ? "text-slate-600" : "text-slate-400"}>
 								{toShortForm(player.position)}
 							</p>
 							<p className={`pt-1 font-semibold ${isLeft ? "text-teal-600" : "text-teal-400"}`}>
-								{(player.soldPrice ?? 0).toFixed(1)}
+								{formatMoneyMillion(player.soldPrice ?? 0)}
 							</p>
 						</div>
 					))
@@ -1546,7 +1911,7 @@ function BattlegroundPanel({
 										: "text-teal-400"
 							}`}
 						>
-							{budget.toFixed(1)}
+							{formatMoneyMillion(budget)}
 						</p>
 						<p className={`mt-1 text-[11px] ${labelColor}`}>
 							Need {playersNeeded} more to reach squad size {requiredSquadSize}
@@ -1580,18 +1945,7 @@ function BattlegroundPanel({
 
 					<div className={`flex-1 border-b ${borderColor} px-4 py-3`}>{squadListSection}</div>
 
-					<div className={`px-4 py-3`}>
-						<button
-							onClick={onDownloadSquad}
-							className={`w-full rounded-md px-3 py-2 text-xs font-bold uppercase tracking-wide transition ${
-								isLeft
-									? "bg-slate-900 text-white hover:bg-slate-700"
-									: "bg-slate-100 text-slate-900 hover:bg-white"
-							}`}
-						>
-							Download Squad
-						</button>
-					</div>
+					<div className={`px-4 py-3`} />
 				</div>
 			</div>
 		</aside>
@@ -1659,4 +2013,10 @@ function sortRoster(roster: Player[]) {
 
 		return a.name.localeCompare(b.name);
 	});
+}
+
+function formatMoneyMillion(value: number) {
+	const numeric = Number(value || 0);
+	const formatted = numeric.toFixed(1).replace(/\.0$/, "");
+	return `£${formatted}M`;
 }
