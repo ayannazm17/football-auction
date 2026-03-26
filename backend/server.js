@@ -1,15 +1,19 @@
-require('dotenv').config();
-console.log("--- BACKEND DEBUG ---");
-console.log("Looking for key in:", process.cwd());
-console.log("Is ADMIN_SECRET_KEY defined?", !!process.env.ADMIN_SECRET_KEY);
-console.log("----------------------");
+require("dotenv").config();
 
 const express = require("express");
 const cors = require("cors");
 const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
 const multer = require("multer");
+const mongoose = require("mongoose");
 const xlsx = require("xlsx");
+
+console.log("--- BACKEND DEBUG ---");
+console.log("Looking for key in:", process.cwd());
+console.log("Is ADMIN_SECRET_KEY defined?", !!process.env.ADMIN_SECRET_KEY);
+console.log("Is MONGODB_URI defined?", !!process.env.MONGODB_URI);
+console.log("----------------------");
+
 const allowedOrigins = [
 	"http://localhost:3000",
 	"https://football-auction-kohl.vercel.app",
@@ -19,6 +23,30 @@ const allowedOrigins = [
 const app = express();
 const PORT = process.env.PORT || 5000;
 const ADMIN_SECRET_KEY = process.env.ADMIN_SECRET_KEY;
+const MONGODB_URI = process.env.MONGODB_URI;
+
+const playerSchema = new mongoose.Schema(
+	{
+		Name: { type: String, required: true, trim: true },
+		Category: { type: String, required: true, trim: true },
+		Position: { type: String, required: true, trim: true },
+		Price: { type: Number, default: 0 },
+		Rating: { type: Number, default: 0 },
+		Image: { type: String, default: "" },
+		Stats: { type: String, default: "No stats available" },
+		MatchesPlayed: { type: mongoose.Schema.Types.Mixed, default: "N/A" },
+		LastMatchRating: { type: mongoose.Schema.Types.Mixed, default: 0 },
+		IsSold: { type: Boolean, default: false },
+		SoldTo: { type: String, default: "" },
+		SoldPrice: { type: Number, default: 0 },
+	},
+	{ timestamps: true }
+);
+
+playerSchema.index({ Name: 1 }, { unique: true });
+
+const Player = mongoose.model("Player", playerSchema);
+const bidderTeams = {};
 
 app.disable("x-powered-by");
 app.use(helmet());
@@ -31,20 +59,26 @@ const apiLimiter = rateLimit({
 });
 app.use(apiLimiter);
 
-app.use(cors({
-  origin: function (origin, callback) {
-    // allow requests with no origin (like mobile apps or curl)
-    if (!origin) return callback(null, true);
-    
-    if (allowedOrigins.indexOf(origin) === -1) {
-      const msg = 'The CORS policy for this site does not allow access from the specified Origin.';
-      return callback(new Error(msg), false);
-    }
-    return callback(null, true);
-  },
-  methods: ['GET', 'POST'],
-  credentials: true
-}));
+app.use(
+	cors({
+		origin(origin, callback) {
+			if (!origin) {
+				return callback(null, true);
+			}
+
+			if (!allowedOrigins.includes(origin)) {
+				return callback(
+					new Error("The CORS policy for this site does not allow access from the specified Origin."),
+					false
+				);
+			}
+
+			return callback(null, true);
+		},
+		methods: ["GET", "POST"],
+		credentials: true,
+	})
+);
 app.use(express.json());
 
 function verifyAdmin(req, res, next) {
@@ -83,10 +117,6 @@ const upload = multer({
 	},
 });
 
-const players = [];
-const unsoldPool = [];
-const bidderTeams = {};
-
 function normalizeHeader(header) {
 	return String(header || "")
 		.trim()
@@ -123,11 +153,7 @@ function parseNumericOrText(value, fallbackValue = "N/A") {
 function normalizeCategoryToShortForm(category) {
 	const normalized = String(category || "").trim().toLowerCase();
 
-	if (
-		normalized.includes("att") ||
-		normalized.includes("forward") ||
-		normalized.includes("striker")
-	) {
+	if (normalized.includes("att") || normalized.includes("forward") || normalized.includes("striker")) {
 		return "Att";
 	}
 
@@ -135,7 +161,6 @@ function normalizeCategoryToShortForm(category) {
 		return "Mid";
 	}
 
-	// Keep strict 3 buckets: map GK/keeper-like values to Def as requested.
 	if (
 		normalized.includes("def") ||
 		normalized.includes("back") ||
@@ -146,45 +171,66 @@ function normalizeCategoryToShortForm(category) {
 		return "Def";
 	}
 
-	// Unknown values fallback to the closest conservative bucket.
 	return "Def";
 }
 
-// Helper function to count remaining players by category
-function getCountRemainingByCategory() {
-	const unsoldPoolNames = unsoldPool.map((p) => String(p.name).toLowerCase());
-	const remainingPlayers = players.filter(
-		(p) => !p.isSold && !unsoldPoolNames.includes(String(p.name).toLowerCase())
-	);
-
-	const counts = {
-		Att: remainingPlayers.filter((p) => normalizeCategoryToShortForm(p.category) === "Att").length,
-		Mid: remainingPlayers.filter((p) => normalizeCategoryToShortForm(p.category) === "Mid").length,
-		Def: remainingPlayers.filter((p) => normalizeCategoryToShortForm(p.category) === "Def").length,
-	};
-
-	const totalRemaining = remainingPlayers.length;
-
-	return { counts, totalRemaining };
+function escapeRegex(value) {
+	return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function toFinalReportPlayer(player) {
+function toClientPlayer(playerDoc) {
 	return {
-		"Player Name": player.name,
-		Category: normalizeCategoryToShortForm(player.category),
-		Position: String(player.position || "").trim(),
-		Rating: Number(player.avgRating || 0),
-		"Matches Played": player.matchesPlayed ?? "N/A",
+		id: String(playerDoc._id),
+		name: playerDoc.Name,
+		category: normalizeCategoryToShortForm(playerDoc.Category),
+		position: String(playerDoc.Position || "").trim(),
+		price: Number(playerDoc.Price || 0),
+		avgRating: Number(playerDoc.Rating || 0),
+		image: playerDoc.Image || "",
+		imageFilename: playerDoc.Image || "",
+		lastMatchStats: playerDoc.Stats || "No stats available",
+		stats: playerDoc.Stats || "No stats available",
+		matchesPlayed: playerDoc.MatchesPlayed ?? "N/A",
+		lastMatchRating: playerDoc.LastMatchRating ?? 0,
+		isSold: Boolean(playerDoc.IsSold),
+		soldPrice: Number(playerDoc.SoldPrice || 0),
+		soldTo: playerDoc.SoldTo || "",
 	};
 }
 
-app.post("/upload", verifyAdmin, upload.single("file"), (req, res) => {
+async function getCountRemainingByCategory() {
+	const [att, mid, def] = await Promise.all([
+		Player.countDocuments({ IsSold: false, Category: "Att" }),
+		Player.countDocuments({ IsSold: false, Category: "Mid" }),
+		Player.countDocuments({ IsSold: false, Category: "Def" }),
+	]);
+
+	return {
+		counts: {
+			Att: att,
+			Mid: mid,
+			Def: def,
+		},
+		totalRemaining: att + mid + def,
+	};
+}
+
+function toFinalReportPlayer(playerDoc) {
+	return {
+		"Player Name": playerDoc.Name,
+		Category: normalizeCategoryToShortForm(playerDoc.Category),
+		Position: String(playerDoc.Position || "").trim(),
+		Rating: Number(playerDoc.Rating || 0),
+		"Matches Played": playerDoc.MatchesPlayed ?? "N/A",
+	};
+}
+
+app.post("/upload", verifyAdmin, upload.single("file"), async (req, res) => {
 	try {
 		if (!req.file) {
 			return res.status(400).json({ error: "No file uploaded" });
 		}
 
-		// FormData can send captains as a comma-separated string; normalize to array.
 		const rawCaptains = req.body?.captains;
 		const captainNames = Array.isArray(rawCaptains)
 			? rawCaptains
@@ -205,9 +251,7 @@ app.post("/upload", verifyAdmin, upload.single("file"), (req, res) => {
 		const firstSheet = workbook.Sheets[firstSheetName];
 		const rows = xlsx.utils.sheet_to_json(firstSheet, { defval: "" });
 
-		players.length = 0;
-		unsoldPool.length = 0;
-
+		const docsToInsert = [];
 		for (const row of rows) {
 			const name = getValueByHeader(row, ["name", "playername"]);
 			const category = getValueByHeader(row, ["category", "cat"]);
@@ -226,155 +270,166 @@ app.post("/upload", verifyAdmin, upload.single("file"), (req, res) => {
 				return Number.isNaN(parsed) ? String(rawLastMatchRating).trim() : parsed;
 			})();
 			const lastMatchStats = row["Last Match Stats"] || row["lastmatchstats"] || "No stats available";
+			const image = getValueByHeader(row, ["image", "imagefilename", "photo", "avatar", "picture"]);
+			const rawPrice = getValueByHeader(row, ["price", "baseprice", "cost"]);
+			const parsedPrice = Number(rawPrice || 0);
 
 			if (!name || !category || !position) {
 				continue;
 			}
 
-			// Skip captain players
 			if (normalizedCaptains.includes(String(name).trim().toLowerCase())) {
 				continue;
 			}
 
-			players.push({
-				name: String(name).trim(),
-				category: normalizeCategoryToShortForm(category),
-				position: String(position).trim(),
-				matchesPlayed,
-				avgRating: Number.isNaN(avgRating) ? 0 : avgRating,
-				lastMatchRating,
-				lastMatchStats: String(lastMatchStats).trim(),
-				isSold: false,
+			docsToInsert.push({
+				Name: String(name).trim(),
+				Category: normalizeCategoryToShortForm(category),
+				Position: String(position).trim(),
+				Price: Number.isNaN(parsedPrice) ? 0 : parsedPrice,
+				Rating: Number.isNaN(avgRating) ? 0 : avgRating,
+				Image: String(image || "").trim(),
+				Stats: String(lastMatchStats).trim(),
+				MatchesPlayed: matchesPlayed,
+				LastMatchRating: lastMatchRating,
+				IsSold: false,
+				SoldTo: "",
+				SoldPrice: 0,
 			});
 		}
 
-		console.log("Sample Player Data:", players[0]);
+		await Player.deleteMany({});
+		if (docsToInsert.length > 0) {
+			await Player.insertMany(docsToInsert, { ordered: false });
+		}
+		for (const key of Object.keys(bidderTeams)) {
+			delete bidderTeams[key];
+		}
+
+		const allPlayers = await Player.find().sort({ Name: 1 }).lean();
+		const { counts, totalRemaining } = await getCountRemainingByCategory();
+
 		return res.json({
 			message: "Players uploaded successfully",
-			totalPlayers: players.length,
-			players,
-			...getCountRemainingByCategory(),
+			totalPlayers: allPlayers.length,
+			players: allPlayers.map(toClientPlayer),
+			counts,
+			totalRemaining,
 		});
 	} catch (error) {
 		return res.status(500).json({ error: error.message || "Upload failed" });
 	}
 });
 
-app.get("/final-squad-report", verifyAdmin, (req, res) => {
-	const soldPlayers = players.filter((player) => player.isSold);
-
-	return res.json({
-		totalPlayers: soldPlayers.length,
-		report: soldPlayers.map(toFinalReportPlayer),
-	});
+app.get("/players", async (req, res) => {
+	try {
+		const allPlayers = await Player.find().sort({ Name: 1 }).lean();
+		return res.json(allPlayers.map(toClientPlayer));
+	} catch (error) {
+		return res.status(500).json({ error: error.message || "Failed to fetch players" });
+	}
 });
 
-app.get("/draw", (req, res) => {
-	const { category } = req.query;
-
-	// Use unsoldPool if playerPool is empty, otherwise use playerPool
-	const unsoldPlayers = players.filter((player) => !player.isSold);
-	const poolToUse = unsoldPlayers.length > 0 ? unsoldPlayers : unsoldPool;
-
-	if (poolToUse.length === 0) {
-		return res.status(404).json({ error: "No unsold players available" });
-	}
-
-	const requestedCategory = category ? normalizeCategoryToShortForm(category) : "";
-	const filteredPool = requestedCategory
-		? poolToUse.filter(
-				(player) => normalizeCategoryToShortForm(player.category) === requestedCategory
-		  )
-		: poolToUse;
-
-	console.log(`[/draw] Requested category: '${requestedCategory}', Filtered pool size: ${filteredPool.length}`);
-
-	if (filteredPool.length === 0) {
-		return res.status(404).json({
-			error: `No unsold players available for category '${category}'`,
+app.get("/final-squad-report", verifyAdmin, async (req, res) => {
+	try {
+		const soldPlayers = await Player.find({ IsSold: true, SoldTo: { $ne: "" } }).sort({ Name: 1 }).lean();
+		return res.json({
+			totalPlayers: soldPlayers.length,
+			report: soldPlayers.map(toFinalReportPlayer),
 		});
+	} catch (error) {
+		return res.status(500).json({ error: error.message || "Failed to fetch final report" });
 	}
-
-	const randomIndex = Math.floor(Math.random() * filteredPool.length);
-	const randomPlayer = filteredPool[randomIndex];
-
-	// Get counts of remaining players by category
-	const { counts, totalRemaining } = getCountRemainingByCategory();
-
-	return res.json({
-		player: randomPlayer,
-		currentBid: 0,
-		lastBidder: null,
-		counts,
-		totalRemaining,
-	});
 });
 
-app.post("/sold", verifyAdmin, (req, res) => {
-	const { name, timerExpired, bidderName, amount } = req.body || {};
-	const isTimerExpired =
-		timerExpired === true ||
-		timerExpired === "true" ||
-		timerExpired === 1 ||
-		timerExpired === "1";
-	const hasBidderSale =
-		bidderName !== undefined &&
-		bidderName !== null &&
-		String(bidderName).trim() !== "" &&
-		amount !== undefined &&
-		amount !== null &&
-		amount !== "";
+app.get("/draw", async (req, res) => {
+	try {
+		const { category } = req.query;
+		const filter = { IsSold: false };
 
-	if (!name) {
-		return res.status(400).json({ error: "Player name is required" });
-	}
-
-	const player = players.find(
-		(item) => item.name.toLowerCase() === String(name).toLowerCase()
-	);
-
-	if (!player) {
-		return res.status(404).json({ error: "Player not found" });
-	}
-
-	if (player.isSold) {
-		return res.status(400).json({ error: "Player is already sold" });
-	}
-
-	player.isSold = true;
-
-	if (hasBidderSale) {
-		const teamName = String(bidderName).trim();
-		const numericAmount = Number(amount);
-		const soldAmount = Number.isNaN(numericAmount) ? 0 : numericAmount;
-
-		if (!bidderTeams[teamName]) {
-			bidderTeams[teamName] = [];
+		if (category) {
+			filter.Category = normalizeCategoryToShortForm(category);
 		}
 
-		const soldRecord = {
-			...player,
-			soldTo: teamName,
-			soldPrice: soldAmount,
-		};
+		const poolToUse = await Player.find(filter).lean();
+		if (poolToUse.length === 0) {
+			return res.status(404).json({ error: "No unsold players available" });
+		}
 
-		bidderTeams[teamName].push(soldRecord);
-		player.soldTo = teamName;
-		player.soldPrice = soldAmount;
+		const randomIndex = Math.floor(Math.random() * poolToUse.length);
+		const randomPlayer = poolToUse[randomIndex];
+		const { counts, totalRemaining } = await getCountRemainingByCategory();
+
+		return res.json({
+			player: toClientPlayer(randomPlayer),
+			currentBid: 0,
+			lastBidder: null,
+			counts,
+			totalRemaining,
+		});
+	} catch (error) {
+		return res.status(500).json({ error: error.message || "Draw failed" });
 	}
+});
 
-	// If timer expired, add to unsoldPool (player was not sold in time)
-	if (isTimerExpired && !hasBidderSale) {
-		unsoldPool.push(player);
+app.post("/sold", verifyAdmin, async (req, res) => {
+	try {
+		const { name, timerExpired, bidderName, amount } = req.body || {};
+		const isTimerExpired =
+			timerExpired === true ||
+			timerExpired === "true" ||
+			timerExpired === 1 ||
+			timerExpired === "1";
+		const hasBidderSale =
+			bidderName !== undefined &&
+			bidderName !== null &&
+			String(bidderName).trim() !== "" &&
+			amount !== undefined &&
+			amount !== null &&
+			amount !== "";
+
+		if (!name) {
+			return res.status(400).json({ error: "Player name is required" });
+		}
+
+		const player = await Player.findOne({ Name: { $regex: `^${escapeRegex(name)}$`, $options: "i" } });
+		if (!player) {
+			return res.status(404).json({ error: "Player not found" });
+		}
+
+		if (player.IsSold) {
+			return res.status(400).json({ error: "Player is already sold" });
+		}
+
+		player.IsSold = true;
+
+		if (hasBidderSale) {
+			const teamName = String(bidderName).trim();
+			const numericAmount = Number(amount);
+			const soldAmount = Number.isNaN(numericAmount) ? 0 : numericAmount;
+
+			player.SoldTo = teamName;
+			player.SoldPrice = soldAmount;
+			player.Price = soldAmount;
+
+			if (!bidderTeams[teamName]) {
+				bidderTeams[teamName] = [];
+			}
+			bidderTeams[teamName].push(toClientPlayer(player));
+		}
+
+		await player.save();
+
+		return res.json({
+			message: "Player marked as sold",
+			player: toClientPlayer(player),
+			timerExpired: isTimerExpired,
+			movedToUnsoldPool: isTimerExpired && !hasBidderSale,
+			savedToBidderTeam: hasBidderSale ? String(bidderName).trim() : null,
+		});
+	} catch (error) {
+		return res.status(500).json({ error: error.message || "Failed to mark sold" });
 	}
-
-	return res.json({
-		message: "Player marked as sold",
-		player,
-		timerExpired: isTimerExpired,
-		movedToUnsoldPool: isTimerExpired && !hasBidderSale,
-		savedToBidderTeam: hasBidderSale ? String(bidderName).trim() : null,
-	});
 });
 
 app.use((error, req, res, next) => {
@@ -393,8 +448,23 @@ app.use((error, req, res, next) => {
 	return next();
 });
 
+async function startServer() {
+	try {
+		if (!MONGODB_URI) {
+			throw new Error("Missing MONGODB_URI in backend .env file");
+		}
 
-app.listen(PORT, '0.0.0.0', () => {
-	console.log("process.env.ADMIN_SECRET_KEY:", process.env.ADMIN_SECRET_KEY);
-	console.log(`Server running on port ${PORT}`);
-});
+		await mongoose.connect(process.env.MONGODB_URI);
+		console.log("Successfully connected to MongoDB");
+
+		app.listen(PORT, "0.0.0.0", () => {
+			console.log("process.env.ADMIN_SECRET_KEY:", process.env.ADMIN_SECRET_KEY);
+			console.log(`Server running on port ${PORT}`);
+		});
+	} catch (error) {
+		console.error("Failed to start server:", error.message || error);
+		process.exit(1);
+	}
+}
+
+void startServer();

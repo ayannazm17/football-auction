@@ -39,8 +39,17 @@ type SoldHistoryEntry = {
 	timestamp: string;
 };
 
+type GalleryPlayer = {
+	name: string;
+	position: string;
+	category: string;
+	imageFilename?: string;
+	image?: string;
+};
+
 type CaptainSide = "captain1" | "captain2";
 type PositionFilter = "Att" | "Mid" | "Def";
+type AppTab = "landing" | "auction" | "gallery";
 const REQUIRED_SQUAD_SIZE = 11;
 const FINAL_SQUAD_SIZE = 12;
 const AUCTION_STORAGE_KEY = "auction_state_v1";
@@ -93,7 +102,7 @@ export default function Home() {
 	const [isFinalScreenOpen, setIsFinalScreenOpen] = useState(false);
 	const [isRemainingPoolOpen, setIsRemainingPoolOpen] = useState(false);
 	const [remainingSearch, setRemainingSearch] = useState("");
-	const [hasEnteredDashboard, setHasEnteredDashboard] = useState(false);
+	const [activeTab, setActiveTab] = useState<AppTab>("landing");
 	const timerExpiryInFlightRef = useRef(false);
 	const audioCtxRef = useRef<AudioContext | null>(null);
 
@@ -1130,28 +1139,52 @@ export default function Home() {
 	const captain1FinalCounts = useMemo(() => getSquadCounts(sortedCaptain1FinalRoster), [sortedCaptain1FinalRoster]);
 	const captain2FinalCounts = useMemo(() => getSquadCounts(sortedCaptain2FinalRoster), [sortedCaptain2FinalRoster]);
 
-	if (!hasEnteredDashboard) {
+	if (activeTab === "landing") {
 		return (
 			<main
-				className={`${bodyFont.className} min-h-screen bg-gradient-to-b from-slate-100 via-white to-cyan-50 text-slate-900`}
+				className={`${bodyFont.className} relative min-h-screen overflow-hidden bg-slate-950 text-white`}
 			>
-				<div className="flex min-h-screen items-center justify-center px-4">
-					<div className="w-full max-w-2xl rounded-3xl border border-cyan-200 bg-white/90 p-10 text-center shadow-2xl">
-						<h1 className={`${displayFont.className} text-5xl tracking-wide text-slate-900 sm:text-6xl`}>
+				<div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_16%_18%,rgba(16,185,129,0.2),transparent_32%),radial-gradient(circle_at_82%_20%,rgba(56,189,248,0.24),transparent_36%),radial-gradient(circle_at_48%_100%,rgba(234,179,8,0.18),transparent_42%)]" />
+				<div className="relative z-10 flex min-h-screen items-center justify-center px-4 py-10">
+					<div className="w-full max-w-5xl rounded-3xl border border-cyan-300/40 bg-slate-900/85 p-8 text-center shadow-[0_0_80px_rgba(14,165,233,0.2)] sm:p-12">
+						<p className="text-xs font-extrabold uppercase tracking-[0.32em] text-cyan-300">Football Operations Hub</p>
+						<h1 className={`${displayFont.className} mt-4 text-5xl tracking-wide text-white sm:text-7xl`}>
 							Football Auction Dashboard
 						</h1>
-						<p className="mt-4 text-sm font-semibold uppercase tracking-[0.2em] text-cyan-700">
-							Live Bidding Control Room
+						<p className="mx-auto mt-4 max-w-2xl text-sm font-semibold uppercase tracking-[0.18em] text-slate-300">
+							Choose your mode to run the live auction or explore every registered player.
 						</p>
-						<button
-							onClick={() => setHasEnteredDashboard(true)}
-							className="mt-8 rounded-2xl bg-gradient-to-r from-cyan-600 to-blue-600 px-8 py-4 text-base font-extrabold uppercase tracking-wide text-white transition hover:from-cyan-500 hover:to-blue-500"
-						>
-							Enter Auction Dashboard
-						</button>
+						<div className="mt-10 grid grid-cols-1 gap-5 sm:grid-cols-2">
+							<button
+								onClick={() => setActiveTab("auction")}
+								className="group rounded-2xl border border-cyan-200/40 bg-gradient-to-br from-cyan-500/30 via-blue-600/30 to-slate-900 px-8 py-8 text-left transition hover:-translate-y-1 hover:border-cyan-200/70"
+							>
+								<p className="text-xs font-bold uppercase tracking-[0.18em] text-cyan-200">Live Control</p>
+								<p className={`${displayFont.className} mt-2 text-4xl text-white`}>Enter Auction</p>
+								<p className="mt-2 text-sm text-slate-200">Open admin login and run the bidding dashboard.</p>
+							</button>
+							<button
+								onClick={() => setActiveTab("gallery")}
+								className="group rounded-2xl border border-amber-200/45 bg-gradient-to-br from-amber-500/35 via-yellow-500/25 to-slate-900 px-8 py-8 text-left transition hover:-translate-y-1 hover:border-amber-200/75"
+							>
+								<p className="text-xs font-bold uppercase tracking-[0.18em] text-amber-200">Scouting Desk</p>
+								<p className={`${displayFont.className} mt-2 text-4xl text-white`}>View Players</p>
+								<p className="mt-2 text-sm text-slate-200">Browse player cards without touching auction state.</p>
+							</button>
+						</div>
 					</div>
 				</div>
 			</main>
+		);
+	}
+
+	if (activeTab === "gallery") {
+		return (
+			<PlayerGallery
+				onBackHome={() => setActiveTab("landing")}
+				bodyFontClass={bodyFont.className}
+				displayFontClass={displayFont.className}
+			/>
 		);
 	}
 
@@ -1747,6 +1780,223 @@ export default function Home() {
 					</div>
 				</div>
 			)}
+		</main>
+	);
+}
+
+function PlayerGallery({
+	onBackHome,
+	bodyFontClass,
+	displayFontClass,
+}: {
+	onBackHome: () => void;
+	bodyFontClass: string;
+	displayFontClass: string;
+}) {
+	const [players, setPlayers] = useState<GalleryPlayer[]>([]);
+	const [loading, setLoading] = useState(true);
+	const [error, setError] = useState("");
+	const [search, setSearch] = useState("");
+	const [categoryFilter, setCategoryFilter] = useState<"All" | PositionFilter>("All");
+
+	useEffect(() => {
+		let isMounted = true;
+
+		async function loadPlayers() {
+			setLoading(true);
+			setError("");
+
+			try {
+				const response = await fetch(`${API_URL}/players`);
+				const payload = await response.json();
+
+				if (!response.ok) {
+					throw new Error(payload?.error || "Failed to fetch players");
+				}
+
+				const rawPlayers = Array.isArray(payload) ? payload : Array.isArray(payload?.players) ? payload.players : [];
+				const normalizedPlayers: GalleryPlayer[] = rawPlayers
+					.map((item: Record<string, unknown>) => {
+						const name = String(item?.name || item?.playerName || "").trim();
+						const position = String(item?.position || item?.role || "").trim();
+						const categorySource = String(item?.category || position || "").trim();
+						const imageFilename = String(item?.imageFilename || item?.image || item?.photo || item?.avatar || "").trim();
+
+						return {
+							name,
+							position,
+							category: toThreeCategory(categorySource),
+							imageFilename: imageFilename || undefined,
+						};
+					})
+					.filter((player: GalleryPlayer) => player.name.length > 0)
+					.sort((a: GalleryPlayer, b: GalleryPlayer) => a.name.localeCompare(b.name));
+
+				if (!isMounted) {
+					return;
+				}
+
+				setPlayers(normalizedPlayers);
+			} catch (loadError) {
+				if (!isMounted) {
+					return;
+				}
+
+				setError(loadError instanceof Error ? loadError.message : "Failed to fetch players");
+				setPlayers([]);
+			} finally {
+				if (isMounted) {
+					setLoading(false);
+				}
+			}
+		}
+
+		void loadPlayers();
+
+		return () => {
+			isMounted = false;
+		};
+	}, []);
+
+	const filteredPlayers = useMemo(() => {
+		const query = search.trim().toLowerCase();
+		return players.filter((player) => {
+			if (categoryFilter !== "All" && toThreeCategory(player.category) !== categoryFilter) {
+				return false;
+			}
+
+			if (!query) {
+				return true;
+			}
+
+			const name = String(player.name || "").toLowerCase();
+			const position = String(player.position || "").toLowerCase();
+			return name.includes(query) || position.includes(query);
+		});
+	}, [players, search, categoryFilter]);
+
+	function getPlayerImageUrl(player: GalleryPlayer) {
+		const direct = String(player.image || player.imageFilename || "").trim();
+		if (!direct) {
+			return `https://ui-avatars.com/api/?name=${encodeURIComponent(player.name)}&background=0f172a&color=facc15&size=512&bold=true`;
+		}
+
+		if (/^https?:\/\//i.test(direct) || direct.startsWith("/players/")) {
+			return direct;
+		}
+
+		return `${API_URL}/players/${direct}`;
+	}
+
+	function getCategoryTagClass(category: PositionFilter) {
+		if (category === "Att") {
+			return "border-rose-300/70 bg-rose-500/20 text-rose-100";
+		}
+
+		if (category === "Mid") {
+			return "border-emerald-300/70 bg-emerald-500/20 text-emerald-100";
+		}
+
+		return "border-sky-300/70 bg-sky-500/20 text-sky-100";
+	}
+
+	return (
+		<main className={`${bodyFontClass} min-h-screen bg-gradient-to-b from-slate-950 via-slate-900 to-black text-white`}>
+			<div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
+				<div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+					<button
+						onClick={onBackHome}
+						className="rounded-xl border border-cyan-300/50 bg-cyan-500/15 px-4 py-2 text-sm font-extrabold uppercase tracking-[0.12em] text-cyan-200 transition hover:bg-cyan-500/30"
+					>
+						Return to Home
+					</button>
+					<div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row">
+						<input
+							type="text"
+							value={search}
+							onChange={(event) => setSearch(event.target.value)}
+							placeholder="Search by name or position"
+							className="w-full rounded-xl border border-slate-500 bg-slate-900 px-4 py-2 text-sm font-semibold text-white outline-none transition focus:border-amber-400 sm:w-72"
+						/>
+						<select
+							value={categoryFilter}
+							onChange={(event) => setCategoryFilter(event.target.value as "All" | PositionFilter)}
+							className="rounded-xl border border-slate-500 bg-slate-900 px-4 py-2 text-sm font-semibold text-white outline-none transition focus:border-cyan-400"
+						>
+							<option value="All">Category: All</option>
+							<option value="Att">Category: Att</option>
+							<option value="Mid">Category: Mid</option>
+							<option value="Def">Category: Def</option>
+						</select>
+					</div>
+				</div>
+
+				<div className="mb-6">
+					<h1 className={`${displayFontClass} text-4xl tracking-wide text-amber-300 sm:text-5xl`}>
+						Player Gallery
+					</h1>
+					<p className="mt-2 text-sm uppercase tracking-[0.16em] text-slate-300">
+						Top Trumps Style Scout Board
+					</p>
+					<p className="mt-2 text-sm text-slate-400">
+						Showing {filteredPlayers.length} of {players.length} players
+					</p>
+				</div>
+
+				{loading ? (
+					<div className="rounded-2xl border border-slate-700 bg-slate-900/60 p-8 text-center text-slate-300">
+						Loading players...
+					</div>
+				) : error ? (
+					<div className="rounded-2xl border border-rose-500/50 bg-rose-900/20 p-8 text-center text-rose-200">
+						Unable to load /players: {error}
+					</div>
+				) : players.length === 0 ? (
+					<div className="rounded-2xl border border-dashed border-slate-700 bg-slate-900/50 p-8 text-center text-slate-400">
+						No players were returned by the server.
+					</div>
+				) : filteredPlayers.length === 0 ? (
+					<div className="rounded-2xl border border-dashed border-slate-700 bg-slate-900/50 p-8 text-center text-slate-400">
+						No players match your search.
+					</div>
+				) : (
+					<div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
+						{filteredPlayers.map((player, index) => {
+							const imageUrl = getPlayerImageUrl(player);
+							const normalizedCategory = toThreeCategory(player.category || player.position);
+
+							return (
+								<article
+									key={`${player.name}-${player.position}-${index}`}
+									className="group overflow-hidden rounded-2xl border border-amber-300/40 bg-gradient-to-b from-slate-900 via-slate-950 to-black shadow-[0_10px_25px_rgba(0,0,0,0.45)] transition hover:-translate-y-1 hover:border-amber-300/70"
+								>
+									<div className="relative h-56 border-b border-amber-300/30 bg-black">
+										<img
+											src={imageUrl}
+											alt={player.name}
+											className="h-full w-full object-cover transition duration-300 group-hover:scale-105"
+										/>
+										<div className="absolute left-3 top-3 rounded-full border border-cyan-300/60 bg-cyan-500/20 px-2 py-1 text-[10px] font-extrabold uppercase tracking-[0.14em] text-cyan-200">
+											{toShortForm(player.position)}
+										</div>
+									</div>
+									<div className="p-4">
+										<h3 className="line-clamp-1 text-lg font-extrabold text-white">{player.name}</h3>
+										<div className="mt-2 flex items-center justify-between gap-2">
+											<p className="text-xs font-semibold uppercase tracking-[0.14em] text-amber-300">
+												Position: {toShortForm(player.position)}
+											</p>
+											<span className={`rounded-full border px-2 py-1 text-[10px] font-extrabold uppercase tracking-[0.12em] ${getCategoryTagClass(normalizedCategory)}`}>
+												{normalizedCategory}
+											</span>
+										</div>
+									</div>
+								</article>
+							);
+						})}
+					</div>
+				)}
+			</div>
 		</main>
 	);
 }
