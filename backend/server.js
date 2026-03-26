@@ -5,13 +5,11 @@ const cors = require("cors");
 const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
 const multer = require("multer");
-const mongoose = require("mongoose");
 const xlsx = require("xlsx");
 
 console.log("--- BACKEND DEBUG ---");
 console.log("Looking for key in:", process.cwd());
 console.log("Is ADMIN_SECRET_KEY defined?", !!process.env.ADMIN_SECRET_KEY);
-console.log("Is MONGODB_URI defined?", !!process.env.MONGODB_URI);
 console.log("----------------------");
 
 const allowedOrigins = [
@@ -23,29 +21,7 @@ const allowedOrigins = [
 const app = express();
 const PORT = process.env.PORT || 5000;
 const ADMIN_SECRET_KEY = process.env.ADMIN_SECRET_KEY;
-const MONGODB_URI = process.env.MONGODB_URI;
-
-const playerSchema = new mongoose.Schema(
-	{
-		Name: { type: String, required: true, trim: true },
-		Category: { type: String, required: true, trim: true },
-		Position: { type: String, required: true, trim: true },
-		Price: { type: Number, default: 0 },
-		Rating: { type: Number, default: 0 },
-		Image: { type: String, default: "" },
-		Stats: { type: String, default: "No stats available" },
-		MatchesPlayed: { type: mongoose.Schema.Types.Mixed, default: "N/A" },
-		LastMatchRating: { type: mongoose.Schema.Types.Mixed, default: 0 },
-		IsSold: { type: Boolean, default: false },
-		SoldTo: { type: String, default: "" },
-		SoldPrice: { type: Number, default: 0 },
-	},
-	{ timestamps: true }
-);
-
-playerSchema.index({ Name: 1 }, { unique: true });
-
-const Player = mongoose.model("Player", playerSchema);
+let players = [];
 const bidderTeams = {};
 
 app.disable("x-powered-by");
@@ -180,7 +156,7 @@ function escapeRegex(value) {
 
 function toClientPlayer(playerDoc) {
 	return {
-		id: String(playerDoc._id),
+		id: String(playerDoc.id || playerDoc._id || ""),
 		name: playerDoc.Name,
 		category: normalizeCategoryToShortForm(playerDoc.Category),
 		position: String(playerDoc.Position || "").trim(),
@@ -199,11 +175,9 @@ function toClientPlayer(playerDoc) {
 }
 
 async function getCountRemainingByCategory() {
-	const [att, mid, def] = await Promise.all([
-		Player.countDocuments({ IsSold: false, Category: "Att" }),
-		Player.countDocuments({ IsSold: false, Category: "Mid" }),
-		Player.countDocuments({ IsSold: false, Category: "Def" }),
-	]);
+	const att = players.filter((player) => !player.IsSold && player.Category === "Att").length;
+	const mid = players.filter((player) => !player.IsSold && player.Category === "Mid").length;
+	const def = players.filter((player) => !player.IsSold && player.Category === "Def").length;
 
 	return {
 		counts: {
@@ -232,12 +206,13 @@ app.post("/upload", verifyAdmin, upload.single("file"), async (req, res) => {
 		}
 
 		const rawCaptains = req.body?.captains;
-		const captainNames = Array.isArray(rawCaptains)
-			? rawCaptains
-			: typeof rawCaptains === "string"
+		const normalizedCaptains = (
+			typeof rawCaptains === "string"
 				? rawCaptains.split(",")
-				: [];
-		const normalizedCaptains = captainNames
+				: Array.isArray(rawCaptains)
+					? rawCaptains
+					: []
+		)
 			.map((name) => String(name).trim().toLowerCase())
 			.filter((name) => name.length > 0);
 
@@ -298,15 +273,18 @@ app.post("/upload", verifyAdmin, upload.single("file"), async (req, res) => {
 			});
 		}
 
-		await Player.deleteMany({});
-		if (docsToInsert.length > 0) {
-			await Player.insertMany(docsToInsert, { ordered: false });
-		}
+		players = docsToInsert
+			.map((player, index) => ({
+				...player,
+				id: `${Date.now()}-${index}`,
+			}))
+			.sort((a, b) => a.Name.localeCompare(b.Name));
+
 		for (const key of Object.keys(bidderTeams)) {
 			delete bidderTeams[key];
 		}
 
-		const allPlayers = await Player.find().sort({ Name: 1 }).lean();
+		const allPlayers = players;
 		const { counts, totalRemaining } = await getCountRemainingByCategory();
 
 		return res.json({
@@ -323,8 +301,7 @@ app.post("/upload", verifyAdmin, upload.single("file"), async (req, res) => {
 
 app.get("/players", async (req, res) => {
 	try {
-		const allPlayers = await Player.find().sort({ Name: 1 }).lean();
-		return res.json(allPlayers.map(toClientPlayer));
+		return res.json(players);
 	} catch (error) {
 		return res.status(500).json({ error: error.message || "Failed to fetch players" });
 	}
@@ -332,7 +309,9 @@ app.get("/players", async (req, res) => {
 
 app.get("/final-squad-report", verifyAdmin, async (req, res) => {
 	try {
-		const soldPlayers = await Player.find({ IsSold: true, SoldTo: { $ne: "" } }).sort({ Name: 1 }).lean();
+		const soldPlayers = players
+			.filter((player) => player.IsSold && String(player.SoldTo || "").trim() !== "")
+			.sort((a, b) => a.Name.localeCompare(b.Name));
 		return res.json({
 			totalPlayers: soldPlayers.length,
 			report: soldPlayers.map(toFinalReportPlayer),
@@ -345,13 +324,19 @@ app.get("/final-squad-report", verifyAdmin, async (req, res) => {
 app.get("/draw", async (req, res) => {
 	try {
 		const { category } = req.query;
-		const filter = { IsSold: false };
+		const normalizedCategory = category ? normalizeCategoryToShortForm(category) : null;
+		const poolToUse = players.filter((player) => {
+			if (player.IsSold) {
+				return false;
+			}
 
-		if (category) {
-			filter.Category = normalizeCategoryToShortForm(category);
-		}
+			if (normalizedCategory && player.Category !== normalizedCategory) {
+				return false;
+			}
 
-		const poolToUse = await Player.find(filter).lean();
+			return true;
+		});
+
 		if (poolToUse.length === 0) {
 			return res.status(404).json({ error: "No unsold players available" });
 		}
@@ -392,7 +377,10 @@ app.post("/sold", verifyAdmin, async (req, res) => {
 			return res.status(400).json({ error: "Player name is required" });
 		}
 
-		const player = await Player.findOne({ Name: { $regex: `^${escapeRegex(name)}$`, $options: "i" } });
+		const normalizedInputName = String(name).trim().toLowerCase();
+		const player = players.find(
+			(item) => String(item.Name).trim().toLowerCase() === normalizedInputName
+		);
 		if (!player) {
 			return res.status(404).json({ error: "Player not found" });
 		}
@@ -417,8 +405,6 @@ app.post("/sold", verifyAdmin, async (req, res) => {
 			}
 			bidderTeams[teamName].push(toClientPlayer(player));
 		}
-
-		await player.save();
 
 		return res.json({
 			message: "Player marked as sold",
@@ -450,13 +436,6 @@ app.use((error, req, res, next) => {
 
 async function startServer() {
 	try {
-		if (!MONGODB_URI) {
-			throw new Error("Missing MONGODB_URI in backend .env file");
-		}
-
-		await mongoose.connect(process.env.MONGODB_URI);
-		console.log("Successfully connected to MongoDB");
-
 		app.listen(PORT, "0.0.0.0", () => {
 			console.log("process.env.ADMIN_SECRET_KEY:", process.env.ADMIN_SECRET_KEY);
 			console.log(`Server running on port ${PORT}`);

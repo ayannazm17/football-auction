@@ -843,20 +843,31 @@ export default function Home() {
 		try {
 			const formData = new FormData();
 			formData.append("file", file);
-			const captains = captainsInput
+			const cleanCaptainsString = captainsInput
 				.split(",")
-				.map((name) => name.trim())
-				.filter((name) => name.length > 0);
-			formData.append("captains", captains.join(","));
+				.map((name) => name.trim().toLowerCase())
+				.filter((name) => name.length > 0)
+				.join(",");
+			formData.append("captains", cleanCaptainsString);
 
-			console.log("Fetching from:", API_URL);
-			const response = await fetch(`${API_URL}/upload`, {
-				method: "POST",
-				headers: {
-					"x-admin-key": adminKey,
-				},
-				body: formData,
-			});
+			const uploadUrl = `${API_URL}/upload`;
+			console.log("Target URL:", API_URL + "/upload");
+
+			let response: Response;
+			try {
+				response = await fetch(uploadUrl, {
+					method: "POST",
+					headers: {
+						"x-admin-key": adminKey,
+					},
+					body: formData,
+				});
+			} catch (error) {
+				const errorMessage = error instanceof Error ? error.message : String(error);
+				console.error("FETCH ERROR:", errorMessage);
+				alert("Cannot reach backend server. Is it running?");
+				throw error;
+			}
 
 			const data = await response.json();
 
