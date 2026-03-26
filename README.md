@@ -51,8 +51,8 @@ npm run dev
 The dashboard will be available at http://localhost:3000.
 
 📊 Excel Data Format
-Name,Category,Position,AvgRating,LastMatchRating,Last Match Stats
-Player Name,Att/Mid/Def,e.g. ST,0-10,0-10,Text Description
+Name | Category | Position | AvgRating | LastMatchRating | Last Match Stats
+Player Name | Att/Mid/Def | e.g. ST,CM,CB | 0-10 | 0-10 | Text Description
 
 Note: Ensure there are no spaces in the headers. "GK" players should be categorized as "Def" or removed from the file.
 
