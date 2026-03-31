@@ -21,6 +21,7 @@ const allowedOrigins = [
 const app = express();
 const PORT = process.env.PORT || 5000;
 const ADMIN_SECRET_KEY = process.env.ADMIN_SECRET_KEY;
+const DEFAULT_TEAM_BUDGET = 100;
 let players = [];
 const bidderTeams = {};
 
@@ -172,6 +173,44 @@ function toClientPlayer(playerDoc) {
 		soldPrice: Number(playerDoc.SoldPrice || 0),
 		soldTo: playerDoc.SoldTo || "",
 	};
+}
+
+function getOrCreateTeam(teamName) {
+	const normalizedTeamName = String(teamName || "").trim();
+	if (!normalizedTeamName) {
+		return null;
+	}
+
+	if (!bidderTeams[normalizedTeamName]) {
+		bidderTeams[normalizedTeamName] = {
+			budget: DEFAULT_TEAM_BUDGET,
+			squad: [],
+		};
+	}
+
+	return bidderTeams[normalizedTeamName];
+}
+
+function serializeTeams() {
+	const teams = {};
+
+	for (const [teamName, teamData] of Object.entries(bidderTeams)) {
+		const squad = Array.isArray(teamData.squad) ? teamData.squad : [];
+		const totalSpent = squad.reduce((sum, player) => sum + Number(player.soldPrice || 0), 0);
+
+		teams[teamName] = {
+			budget: Number(Number(teamData.budget || 0).toFixed(1)),
+			totalSpent: Number(totalSpent.toFixed(1)),
+			totalPlayers: squad.length,
+			squad,
+		};
+	}
+
+	return teams;
+}
+
+function getAvailablePlayerPool() {
+	return players.filter((player) => !player.IsSold).map(toClientPlayer);
 }
 
 async function getCountRemainingByCategory() {
@@ -395,15 +434,18 @@ app.post("/sold", verifyAdmin, async (req, res) => {
 			const teamName = String(bidderName).trim();
 			const numericAmount = Number(amount);
 			const soldAmount = Number.isNaN(numericAmount) ? 0 : numericAmount;
+			const team = getOrCreateTeam(teamName);
 
 			player.SoldTo = teamName;
 			player.SoldPrice = soldAmount;
 			player.Price = soldAmount;
 
-			if (!bidderTeams[teamName]) {
-				bidderTeams[teamName] = [];
+			if (!team) {
+				return res.status(400).json({ error: "Invalid bidder team name" });
 			}
-			bidderTeams[teamName].push(toClientPlayer(player));
+
+			team.budget = Number((Number(team.budget || 0) - soldAmount).toFixed(1));
+			team.squad.push(toClientPlayer(player));
 		}
 
 		return res.json({
@@ -415,6 +457,69 @@ app.post("/sold", verifyAdmin, async (req, res) => {
 		});
 	} catch (error) {
 		return res.status(500).json({ error: error.message || "Failed to mark sold" });
+	}
+});
+
+app.post("/undo-sold", verifyAdmin, async (req, res) => {
+	try {
+		const playerNameInput = req.body?.playerName ?? req.body?.name;
+		const teamNameInput = req.body?.teamName ?? req.body?.bidderName;
+
+		if (!playerNameInput) {
+			return res.status(400).json({ error: "playerName is required" });
+		}
+
+		const normalizedPlayerName = String(playerNameInput).trim().toLowerCase();
+		const playerDoc = players.find(
+			(player) => String(player.Name).trim().toLowerCase() === normalizedPlayerName
+		);
+
+		if (!playerDoc) {
+			return res.status(404).json({ error: "Player not found" });
+		}
+
+		if (!playerDoc.IsSold) {
+			return res.status(400).json({ error: "Player is not currently sold" });
+		}
+
+		const resolvedTeamName = String(teamNameInput || playerDoc.SoldTo || "").trim();
+		if (!resolvedTeamName) {
+			return res.status(400).json({ error: "teamName is required" });
+		}
+
+		const team = bidderTeams[resolvedTeamName];
+		if (!team || !Array.isArray(team.squad)) {
+			return res.status(404).json({ error: "Team not found" });
+		}
+
+		const squadIndex = team.squad.findIndex(
+			(player) => String(player.name).trim().toLowerCase() === normalizedPlayerName
+		);
+
+		if (squadIndex === -1) {
+			return res.status(404).json({ error: "Player not found in the specified team's squad" });
+		}
+
+		const [removedPlayer] = team.squad.splice(squadIndex, 1);
+		const refundAmount = Number(removedPlayer?.soldPrice ?? playerDoc.SoldPrice ?? 0);
+		team.budget = Number((Number(team.budget || 0) + refundAmount).toFixed(1));
+
+		playerDoc.IsSold = false;
+		playerDoc.SoldTo = "";
+		playerDoc.SoldPrice = 0;
+
+		return res.json({
+			message: "Sold player moved back to available pool",
+			teams: serializeTeams(),
+			playerPool: getAvailablePlayerPool(),
+			player: toClientPlayer(playerDoc),
+			refunded: {
+				teamName: resolvedTeamName,
+				amount: Number(refundAmount.toFixed(1)),
+			},
+		});
+	} catch (error) {
+		return res.status(500).json({ error: error.message || "Failed to undo sold player" });
 	}
 });
 

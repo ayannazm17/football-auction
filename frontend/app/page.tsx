@@ -50,6 +50,26 @@ type GalleryPlayer = {
 type CaptainSide = "captain1" | "captain2";
 type PositionFilter = "Att" | "Mid" | "Def";
 type AppTab = "landing" | "auction" | "gallery";
+type UndoActionType = "bid" | "sold" | "draw";
+
+type AuctionSnapshot = {
+	action: UndoActionType;
+	currentPlayer: Player | null;
+	currentBid: number;
+	highestBidder: string | null;
+	highestBidderSide: CaptainSide | null;
+	captain1Budget: number;
+	captain2Budget: number;
+	captain1Roster: Player[];
+	captain2Roster: Player[];
+	playerPool: Player[];
+	historyLog: SoldHistoryEntry[];
+	unsoldPlayers: Player[];
+	previousPlayer: Player | null;
+	timeRemaining: number;
+	timerActive: boolean;
+	bidTimestamps: number[];
+};
 const REQUIRED_SQUAD_SIZE = 11;
 const FINAL_SQUAD_SIZE = 12;
 const AUCTION_STORAGE_KEY = "auction_state_v1";
@@ -103,6 +123,7 @@ export default function Home() {
 	const [isRemainingPoolOpen, setIsRemainingPoolOpen] = useState(false);
 	const [remainingSearch, setRemainingSearch] = useState("");
 	const [activeTab, setActiveTab] = useState<AppTab>("landing");
+	const [auctionHistory, setAuctionHistory] = useState<AuctionSnapshot[]>([]);
 	const timerExpiryInFlightRef = useRef(false);
 	const audioCtxRef = useRef<AudioContext | null>(null);
 
@@ -398,6 +419,34 @@ export default function Home() {
 			...player,
 			category: toThreeCategory(player.category || player.position),
 		};
+	}
+
+	function clonePlayer(player: Player): Player {
+		return { ...player };
+	}
+
+	function saveToHistory(action: UndoActionType) {
+		setAuctionHistory((prev) => [
+			...prev,
+			{
+				action,
+				currentPlayer: currentPlayer ? clonePlayer(currentPlayer) : null,
+				currentBid,
+				highestBidder: lastBidder,
+				highestBidderSide: lastBidderSide,
+				captain1Budget,
+				captain2Budget,
+				captain1Roster: captain1Roster.map(clonePlayer),
+				captain2Roster: captain2Roster.map(clonePlayer),
+				playerPool: playerPool.map(clonePlayer),
+				historyLog: historyLog.map((entry) => ({ ...entry })),
+				unsoldPlayers: unsoldPlayers.map(clonePlayer),
+				previousPlayer: previousPlayer ? clonePlayer(previousPlayer) : null,
+				timeRemaining,
+				timerActive,
+				bidTimestamps: [...bidTimestamps],
+			},
+		]);
 	}
 
 	useEffect(() => {
@@ -785,6 +834,7 @@ export default function Home() {
 		setTimeRemaining(10);
 		setTimerActive(false);
 		setPreviousPlayer(null);
+		setAuctionHistory([]);
 		localStorage.removeItem(AUCTION_STORAGE_KEY);
 		if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
 		setStatusMessage("Auction reset. Upload an Excel sheet to start a fresh match.");
@@ -827,6 +877,60 @@ export default function Home() {
 		setHistoryLog((prev) => prev.filter((item) => item.id !== entryId));
 		setStatusMessage(`Undid sale for ${entry.playerName}. Budget refunded to ${entry.captainName}.`);
 		triggerCountFlash();
+	}
+
+	async function handleUndo() {
+		const lastSnapshot = auctionHistory[auctionHistory.length - 1];
+		if (!lastSnapshot) {
+			setStatusMessage("Nothing to undo.");
+			return;
+		}
+
+		if (lastSnapshot.action === "sold" && lastSnapshot.currentPlayer) {
+			try {
+				console.log("Fetching Undo from:", API_URL + "/undo-sold");
+				const response = await fetch(`${API_URL}/undo-sold`, {
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+						"x-admin-key": adminKey,
+					},
+					body: JSON.stringify({ name: lastSnapshot.currentPlayer.name }),
+				});
+
+				if (!response.ok) {
+					const text = await response.text();
+					console.error("Server returned HTML instead of JSON:", text);
+					setStatusMessage("Undo failed. Check browser console for backend error details.");
+					return;
+				}
+
+				await response.json();
+			} catch (error) {
+				setStatusMessage(error instanceof Error ? error.message : "Failed to undo sold player");
+				return;
+			}
+		}
+
+		setAuctionHistory((prev) => prev.slice(0, -1));
+		setCurrentPlayer(lastSnapshot.currentPlayer ? clonePlayer(lastSnapshot.currentPlayer) : null);
+		setCurrentBid(lastSnapshot.currentBid);
+		setLastBidder(lastSnapshot.highestBidder);
+		setLastBidderSide(lastSnapshot.highestBidderSide);
+		setCaptain1Budget(lastSnapshot.captain1Budget);
+		setCaptain2Budget(lastSnapshot.captain2Budget);
+		setCaptain1Roster(lastSnapshot.captain1Roster.map(clonePlayer));
+		setCaptain2Roster(lastSnapshot.captain2Roster.map(clonePlayer));
+		setPlayerPool(lastSnapshot.playerPool.map(clonePlayer));
+		setHistoryLog(lastSnapshot.historyLog.map((entry) => ({ ...entry })));
+		setUnsoldPlayers(lastSnapshot.unsoldPlayers.map(clonePlayer));
+		setPreviousPlayer(lastSnapshot.previousPlayer ? clonePlayer(lastSnapshot.previousPlayer) : null);
+		setTimeRemaining(lastSnapshot.timeRemaining);
+		setTimerActive(lastSnapshot.timerActive);
+		setBidTimestamps([...lastSnapshot.bidTimestamps]);
+		setIsLastBidderHighlighted(false);
+		resetTickAudio();
+		setStatusMessage(`Undid last action: ${lastSnapshot.action}.`);
 	}
 
 	async function handleUpload(event: React.ChangeEvent<HTMLInputElement>) {
@@ -894,6 +998,7 @@ export default function Home() {
 			setBidTimestamps([]);
 			setIsFinalScreenOpen(false);
 			setPreviousPlayer(null);
+			setAuctionHistory([]);
 			setTimerActive(false);
 			setTimeRemaining(10);
 			setStatusMessage(`Uploaded ${data.totalPlayers ?? 0} players successfully.`);
@@ -906,6 +1011,7 @@ export default function Home() {
 	}
 
 	async function handleDrawPlayer(position?: PositionFilter) {
+		saveToHistory("draw");
 		stopCelebrationAudio();
 		setDrawing(true);
 		setStatusMessage(position ? `Drawing an unsold ${position} player...` : "Drawing a random unsold player...");
@@ -948,6 +1054,7 @@ export default function Home() {
 	}
 
 	function handleBid(side: CaptainSide) {
+		saveToHistory("bid");
 		if (!currentPlayer) {
 			setStatusMessage("Draw a player before bidding.");
 			return;
@@ -1018,6 +1125,7 @@ export default function Home() {
 	}
 
 	async function handleSold() {
+		saveToHistory("sold");
 		if (!currentPlayer) {
 			setStatusMessage("Draw a player before marking sold.");
 			return;
@@ -1406,14 +1514,24 @@ export default function Home() {
 									</div>
 								</div>
 
-								{/* Sold Button */}
-								<button
-									onClick={handleSold}
-									disabled={selling || !currentPlayer || !lastBidderSide}
-									className="mt-6 w-full rounded-xl bg-gradient-to-r from-violet-500 to-violet-600 px-4 py-4 text-lg font-extrabold uppercase tracking-wide text-white transition hover:from-violet-400 hover:to-violet-500 disabled:cursor-not-allowed disabled:opacity-60"
-								>
-									{lastBidder ? `Sold to ${lastBidder}` : "Mark as Sold"}
-								</button>
+								<div className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-2">
+									<button
+										onClick={handleSold}
+										disabled={selling || !currentPlayer || !lastBidderSide}
+										className="rounded-xl bg-gradient-to-r from-violet-500 to-violet-600 px-4 py-4 text-lg font-extrabold uppercase tracking-wide text-white transition hover:from-violet-400 hover:to-violet-500 disabled:cursor-not-allowed disabled:opacity-60"
+									>
+										{lastBidder ? `Sold to ${lastBidder}` : "Mark as Sold"}
+									</button>
+									<button
+										onClick={() => {
+											void handleUndo();
+										}}
+										disabled={auctionHistory.length === 0 || selling || drawing || uploading}
+										className="rounded-xl bg-slate-700 px-4 py-4 text-lg font-extrabold uppercase tracking-wide text-white transition hover:bg-slate-600 disabled:cursor-not-allowed disabled:opacity-60"
+									>
+										↺ Undo
+									</button>
+								</div>
 
 								{/* Status Message */}
 								<div className="mt-6 rounded-xl border border-slate-600 bg-slate-800/50 px-3 py-3">
