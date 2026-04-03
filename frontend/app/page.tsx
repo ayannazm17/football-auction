@@ -425,6 +425,55 @@ export default function Home() {
 		return { ...player };
 	}
 
+	async function restoreUnsoldPlayersForRoundTwo() {
+		if (unsoldPlayers.length === 0) {
+			return false;
+		}
+
+		const playersToRestore = unsoldPlayers.map(clonePlayer);
+		const restoredNames = new Set(playersToRestore.map((player) => player.name.trim().toLowerCase()));
+
+		for (const player of playersToRestore) {
+			const response = await fetch(`${API_URL}/undo-sold`, {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					"x-admin-key": adminKey,
+				},
+				body: JSON.stringify({ name: player.name }),
+			});
+
+			if (!response.ok) {
+				let errorMessage = `Failed to restore ${player.name} for Round 2`;
+				try {
+					const data = await response.json();
+					errorMessage = data.error || errorMessage;
+				} catch {
+					// Ignore non-JSON error bodies.
+				}
+				throw new Error(errorMessage);
+			}
+		}
+
+		setPlayerPool((prev) =>
+			prev.map((player) => {
+				if (!restoredNames.has(player.name.trim().toLowerCase())) {
+					return player;
+				}
+
+				return {
+					...player,
+					isSold: false,
+					soldPrice: undefined,
+				};
+			})
+		);
+		setUnsoldPlayers([]);
+		alert("Main pool exhausted. Bringing back unsold players for Round 2!");
+		setStatusMessage("Main pool exhausted. Bringing back unsold players for Round 2!");
+		return true;
+	}
+
 	function saveToHistory(action: UndoActionType) {
 		setAuctionHistory((prev) => [
 			...prev,
@@ -1019,15 +1068,29 @@ export default function Home() {
 		try {
 			const query = position ? `?category=${encodeURIComponent(position)}` : "";
 			console.log("Fetching from:", API_URL);
-			const response = await fetch(`${API_URL}/draw${query}`, {
+			let response = await fetch(`${API_URL}/draw${query}`, {
 				headers: {
 					"x-admin-key": adminKey,
 				},
 			});
-			const data = await response.json();
+			let data = await response.json();
 
 			if (!response.ok) {
+				if (response.status === 404 && unsoldPlayers.length > 0) {
+					await restoreUnsoldPlayersForRoundTwo();
+					response = await fetch(`${API_URL}/draw${query}`, {
+						headers: {
+							"x-admin-key": adminKey,
+						},
+					});
+					data = await response.json();
+
+					if (!response.ok) {
+						throw new Error(data.error || "Unable to draw player");
+					}
+				} else {
 				throw new Error(data.error || "Unable to draw player");
+				}
 			}
 
 			// Handle new format payload
@@ -1238,21 +1301,54 @@ export default function Home() {
 			return;
 		}
 
-		const exportRows = soldPlayers.map((player) => ({
-			Name: player.name,
-			Category: toThreeCategory(player.category || player.position),
-			Position: toShortForm(player.position),
-			"Price Paid": player.soldPrice ?? 0,
-			AvgRating: player.avgRating ?? 0,
-			LastMatchRating: player.lastMatchRating ?? "N/A",
-			"Last Match Stats": player.lastMatchStats ?? "N/A",
-		}));
+		const captainRows = new Map<
+			string,
+			Array<{
+				Name: string;
+				Category: string;
+				Position: string;
+				"Price Paid": number;
+				AvgRating: number;
+				LastMatchRating: number | string;
+				"Last Match Stats": string;
+			}>
+		>();
 
-		const worksheet = XLSX.utils.json_to_sheet(exportRows);
-		const workbook = XLSX.utils.book_new();
-		XLSX.utils.book_append_sheet(workbook, worksheet, "Final Squads");
-		XLSX.writeFile(workbook, "Auction_Final_Squads.xlsx");
-		setStatusMessage("Final squads exported to Auction_Final_Squads.xlsx");
+		for (const player of soldPlayers) {
+			const playerName = player.name.trim().toLowerCase();
+			const captainName = captain1Roster.some((entry) => entry.name.trim().toLowerCase() === playerName)
+				? captain1Name
+				: captain2Roster.some((entry) => entry.name.trim().toLowerCase() === playerName)
+					? captain2Name
+					: "Unassigned";
+
+			const exportRow = {
+				Name: player.name,
+				Category: toThreeCategory(player.category || player.position),
+				Position: toShortForm(player.position),
+				"Price Paid": player.soldPrice ?? 0,
+				AvgRating: player.avgRating ?? 0,
+				LastMatchRating: player.lastMatchRating ?? "N/A",
+				"Last Match Stats": player.lastMatchStats ?? "N/A",
+			};
+
+			if (!captainRows.has(captainName)) {
+				captainRows.set(captainName, []);
+			}
+
+			captainRows.get(captainName)!.push(exportRow);
+		}
+
+		const wb = XLSX.utils.book_new();
+
+		for (const [captainName, captainData] of captainRows.entries()) {
+			const ws = XLSX.utils.json_to_sheet(captainData);
+			const sheetName = captainName.slice(0, 31) || "Captain";
+			XLSX.utils.book_append_sheet(wb, ws, sheetName);
+		}
+
+		XLSX.writeFile(wb, "Final_Auction_Results.xlsx");
+		setStatusMessage("Final Auction Results exported to Final_Auction_Results.xlsx");
 	}
 
 	const captain1FinalCounts = useMemo(() => getSquadCounts(sortedCaptain1FinalRoster), [sortedCaptain1FinalRoster]);

@@ -270,11 +270,11 @@ app.post("/upload", verifyAdmin, upload.single("file"), async (req, res) => {
 			const name = getValueByHeader(row, ["name", "playername"]);
 			const category = getValueByHeader(row, ["category", "cat"]);
 			const position = getValueByHeader(row, ["position", "role"]);
-			const rawAvgRating = getValueByHeader(row, ["avgrating", "rating", "avg"]);
-			const avgRating = Number(rawAvgRating || 0);
+			const rawAvgRating = getValueByHeader(row, ["avg rating", "avgrating", "rating", "avg"]);
+			const avgRatingValue = Number(rawAvgRating || 0);
 			const rawMatchesPlayed = getValueByHeader(row, ["matchesplayed", "matches", "mp"]);
 			const matchesPlayed = parseNumericOrText(rawMatchesPlayed);
-			const rawLastMatchRating = row["LastMatchRating"] || row["lastMatchRating"] || 0;
+			const rawLastMatchRating = getValueByHeader(row, ["last match rating", "lastmatchrating"]);
 			const lastMatchRating = (() => {
 				if (rawLastMatchRating === null || rawLastMatchRating === undefined || rawLastMatchRating === "") {
 					return 0;
@@ -301,11 +301,13 @@ app.post("/upload", verifyAdmin, upload.single("file"), async (req, res) => {
 				Category: normalizeCategoryToShortForm(category),
 				Position: String(position).trim(),
 				Price: Number.isNaN(parsedPrice) ? 0 : parsedPrice,
-				Rating: Number.isNaN(avgRating) ? 0 : avgRating,
+				Rating: Number.isNaN(avgRatingValue) ? 0 : avgRatingValue,
+				avgRating: Number.isNaN(avgRatingValue) ? 0 : avgRatingValue,
 				Image: String(image || "").trim(),
 				Stats: String(lastMatchStats).trim(),
 				MatchesPlayed: matchesPlayed,
 				LastMatchRating: lastMatchRating,
+				lastMatchRating: lastMatchRating,
 				IsSold: false,
 				SoldTo: "",
 				SoldPrice: 0,
@@ -318,6 +320,8 @@ app.post("/upload", verifyAdmin, upload.single("file"), async (req, res) => {
 				id: `${Date.now()}-${index}`,
 			}))
 			.sort((a, b) => a.Name.localeCompare(b.Name));
+
+		console.log("Sample Player Data:", players[0]);
 
 		for (const key of Object.keys(bidderTeams)) {
 			delete bidderTeams[key];
@@ -483,26 +487,24 @@ app.post("/undo-sold", verifyAdmin, async (req, res) => {
 		}
 
 		const resolvedTeamName = String(teamNameInput || playerDoc.SoldTo || "").trim();
-		if (!resolvedTeamName) {
-			return res.status(400).json({ error: "teamName is required" });
+		let refundAmount = Number(playerDoc.SoldPrice || 0);
+
+		if (resolvedTeamName) {
+			const team = bidderTeams[resolvedTeamName];
+			if (!team || !Array.isArray(team.squad)) {
+				return res.status(404).json({ error: "Team not found" });
+			}
+
+			const squadIndex = team.squad.findIndex(
+				(player) => String(player.name).trim().toLowerCase() === normalizedPlayerName
+			);
+
+			if (squadIndex !== -1) {
+				const [removedPlayer] = team.squad.splice(squadIndex, 1);
+				refundAmount = Number(removedPlayer?.soldPrice ?? playerDoc.SoldPrice ?? 0);
+				team.budget = Number((Number(team.budget || 0) + refundAmount).toFixed(1));
+			}
 		}
-
-		const team = bidderTeams[resolvedTeamName];
-		if (!team || !Array.isArray(team.squad)) {
-			return res.status(404).json({ error: "Team not found" });
-		}
-
-		const squadIndex = team.squad.findIndex(
-			(player) => String(player.name).trim().toLowerCase() === normalizedPlayerName
-		);
-
-		if (squadIndex === -1) {
-			return res.status(404).json({ error: "Player not found in the specified team's squad" });
-		}
-
-		const [removedPlayer] = team.squad.splice(squadIndex, 1);
-		const refundAmount = Number(removedPlayer?.soldPrice ?? playerDoc.SoldPrice ?? 0);
-		team.budget = Number((Number(team.budget || 0) + refundAmount).toFixed(1));
 
 		playerDoc.IsSold = false;
 		playerDoc.SoldTo = "";
