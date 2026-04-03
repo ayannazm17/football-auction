@@ -49,6 +49,17 @@ type GalleryPlayer = {
 
 type CaptainSide = "captain1" | "captain2";
 type PositionFilter = "Att" | "Mid" | "Def";
+type SquadRowType = "captain" | "player";
+
+type SquadDisplayRow = {
+	kind: SquadRowType;
+	name: string;
+	category: string;
+	position: string;
+	pricePaid: number;
+	matchesPlayed: number | string;
+	key: string;
+};
 type AppTab = "landing" | "auction" | "gallery";
 type UndoActionType = "bid" | "sold" | "draw";
 
@@ -210,6 +221,14 @@ export default function Home() {
 		!currentPlayer;
 	const sortedCaptain1FinalRoster = useMemo(() => sortRoster(captain1Roster), [captain1Roster]);
 	const sortedCaptain2FinalRoster = useMemo(() => sortRoster(captain2Roster), [captain2Roster]);
+	const captain1FinalDisplayRows = useMemo(
+		() => buildSquadDisplayRows(captain1Name, sortedCaptain1FinalRoster),
+		[captain1Name, sortedCaptain1FinalRoster]
+	);
+	const captain2FinalDisplayRows = useMemo(
+		() => buildSquadDisplayRows(captain2Name, sortedCaptain2FinalRoster),
+		[captain2Name, sortedCaptain2FinalRoster]
+	);
 
 	const captain1Summary = useMemo(() => {
 		const totalSpent = captain1Roster.reduce((sum, player) => sum + (player.soldPrice ?? 0), 0);
@@ -1301,18 +1320,7 @@ export default function Home() {
 			return;
 		}
 
-		const captainRows = new Map<
-			string,
-			Array<{
-				Name: string;
-				Category: string;
-				Position: string;
-				"Price Paid": number;
-				AvgRating: number;
-				LastMatchRating: number | string;
-				"Last Match Stats": string;
-			}>
-		>();
+		const captainRows = new Map<string, Player[]>();
 
 		for (const player of soldPlayers) {
 			const playerName = player.name.trim().toLowerCase();
@@ -1322,26 +1330,43 @@ export default function Home() {
 					? captain2Name
 					: "Unassigned";
 
-			const exportRow = {
-				Name: player.name,
-				Category: toThreeCategory(player.category || player.position),
-				Position: toShortForm(player.position),
-				"Price Paid": player.soldPrice ?? 0,
-				AvgRating: player.avgRating ?? 0,
-				LastMatchRating: player.lastMatchRating ?? "N/A",
-				"Last Match Stats": player.lastMatchStats ?? "N/A",
-			};
-
 			if (!captainRows.has(captainName)) {
 				captainRows.set(captainName, []);
 			}
 
-			captainRows.get(captainName)!.push(exportRow);
+			captainRows.get(captainName)!.push(player);
 		}
 
 		const wb = XLSX.utils.book_new();
+		const sheetOrder = [captain1Name, captain2Name, ...Array.from(captainRows.keys()).filter((name) => name !== captain1Name && name !== captain2Name)];
 
-		for (const [captainName, captainData] of captainRows.entries()) {
+		for (const captainName of sheetOrder) {
+			const roster = captainRows.get(captainName);
+			if (!roster || roster.length === 0) {
+				continue;
+			}
+
+			const captainData = [
+				{
+					Name: captainName,
+					Category: "Captain",
+					Position: "Captain",
+					"Price Paid": 0,
+					AvgRating: 0,
+					LastMatchRating: "N/A",
+					"Last Match Stats": "N/A",
+				},
+				...sortRoster(roster).map((player) => ({
+					Name: player.name,
+					Category: toThreeCategory(player.category || player.position),
+					Position: toShortForm(player.position),
+					"Price Paid": player.soldPrice ?? 0,
+					AvgRating: player.avgRating ?? 0,
+					LastMatchRating: player.lastMatchRating ?? "N/A",
+					"Last Match Stats": player.lastMatchStats ?? "N/A",
+				})),
+			];
+
 			const ws = XLSX.utils.json_to_sheet(captainData);
 			const sheetName = captainName.slice(0, 31) || "Captain";
 			XLSX.utils.book_append_sheet(wb, ws, sheetName);
@@ -1850,7 +1875,7 @@ export default function Home() {
 								<p className="mt-2 text-sm text-slate-300">Category Summary: Att {captain1FinalCounts.Att} | Mid {captain1FinalCounts.Mid} | Def {captain1FinalCounts.Def}</p>
 								<p className="text-sm text-slate-300">Total Expenditure: {formatMoneyMillion(captain1Summary.totalSpent)}</p>
 								<p className="text-sm text-slate-300">Remaining Budget: {formatMoneyMillion(captain1Budget)}</p>
-								<p className="text-sm text-slate-300">Squad: {captain1Roster.length}/{FINAL_SQUAD_SIZE}</p>
+								<p className="text-sm text-slate-300">Squad: {captain1FinalDisplayRows.length}/{FINAL_SQUAD_SIZE}</p>
 
 								<div className="mt-4 overflow-x-auto rounded-lg border border-slate-700">
 									<table className="min-w-full text-left text-xs">
@@ -1863,24 +1888,35 @@ export default function Home() {
 											</tr>
 										</thead>
 										<tbody>
-											{sortedCaptain1FinalRoster.length === 0 ? (
+											{captain1FinalDisplayRows.length === 0 ? (
 												<tr>
 													<td colSpan={4} className="px-3 py-3 text-slate-400">No players yet</td>
 												</tr>
 											) : (
-												sortedCaptain1FinalRoster.map((player, index) => (
-													<tr key={`c1-${player.name}-${index}`} className="border-t border-slate-700/70">
-														<td className="px-3 py-2 font-semibold text-white">{player.name}</td>
-														<td className="px-3 py-2 text-slate-300">{toThreeCategory(player.category || player.position)}</td>
-														<td className="px-3 py-2 text-slate-300">{player.matchesPlayed ?? "N/A"}</td>
-														<td className="px-3 py-2 font-semibold text-emerald-300">{formatMoneyMillion(player.soldPrice ?? 0)}</td>
+												captain1FinalDisplayRows.map((row) => (
+													<tr key={row.key} className="border-t border-slate-700/70">
+														<td className="px-3 py-2 font-semibold text-white">
+															{row.kind === "captain" ? (
+																<div className="flex items-center gap-2">
+																	<span className="rounded-full bg-amber-500 px-2 py-0.5 text-[10px] font-extrabold uppercase tracking-[0.14em] text-black">Captain</span>
+																	<span>{row.name}</span>
+																</div>
+															) : (
+																row.name
+															)}
+														</td>
+														<td className="px-3 py-2 text-slate-300">{row.category}</td>
+														<td className="px-3 py-2 text-slate-300">{row.matchesPlayed}</td>
+														<td className="px-3 py-2 font-semibold text-emerald-300">
+															{row.kind === "captain" ? "-" : formatMoneyMillion(row.pricePaid)}
+														</td>
 													</tr>
 												))
 											)}
 										</tbody>
 									</table>
 								</div>
-								<p className="mt-3 text-sm font-semibold text-cyan-200">Total Players: {sortedCaptain1FinalRoster.length}</p>
+								<p className="mt-3 text-sm font-semibold text-cyan-200">Total Players: {captain1FinalDisplayRows.length}</p>
 							</div>
 
 							<div className="rounded-2xl border border-slate-700 bg-slate-800/70 p-5">
@@ -1888,7 +1924,7 @@ export default function Home() {
 								<p className="mt-2 text-sm text-slate-300">Category Summary: Att {captain2FinalCounts.Att} | Mid {captain2FinalCounts.Mid} | Def {captain2FinalCounts.Def}</p>
 								<p className="text-sm text-slate-300">Total Expenditure: {formatMoneyMillion(captain2Summary.totalSpent)}</p>
 								<p className="text-sm text-slate-300">Remaining Budget: {formatMoneyMillion(captain2Budget)}</p>
-								<p className="text-sm text-slate-300">Squad: {captain2Roster.length}/{FINAL_SQUAD_SIZE}</p>
+								<p className="text-sm text-slate-300">Squad: {captain2FinalDisplayRows.length}/{FINAL_SQUAD_SIZE}</p>
 
 								<div className="mt-4 overflow-x-auto rounded-lg border border-slate-700">
 									<table className="min-w-full text-left text-xs">
@@ -1901,24 +1937,35 @@ export default function Home() {
 											</tr>
 										</thead>
 										<tbody>
-											{sortedCaptain2FinalRoster.length === 0 ? (
+											{captain2FinalDisplayRows.length === 0 ? (
 												<tr>
 													<td colSpan={4} className="px-3 py-3 text-slate-400">No players yet</td>
 												</tr>
 											) : (
-												sortedCaptain2FinalRoster.map((player, index) => (
-													<tr key={`c2-${player.name}-${index}`} className="border-t border-slate-700/70">
-														<td className="px-3 py-2 font-semibold text-white">{player.name}</td>
-														<td className="px-3 py-2 text-slate-300">{toThreeCategory(player.category || player.position)}</td>
-														<td className="px-3 py-2 text-slate-300">{player.matchesPlayed ?? "N/A"}</td>
-														<td className="px-3 py-2 font-semibold text-emerald-300">{formatMoneyMillion(player.soldPrice ?? 0)}</td>
+												captain2FinalDisplayRows.map((row) => (
+													<tr key={row.key} className="border-t border-slate-700/70">
+														<td className="px-3 py-2 font-semibold text-white">
+															{row.kind === "captain" ? (
+																<div className="flex items-center gap-2">
+																	<span className="rounded-full bg-amber-500 px-2 py-0.5 text-[10px] font-extrabold uppercase tracking-[0.14em] text-black">Captain</span>
+																	<span>{row.name}</span>
+																</div>
+															) : (
+																row.name
+															)}
+														</td>
+														<td className="px-3 py-2 text-slate-300">{row.category}</td>
+														<td className="px-3 py-2 text-slate-300">{row.matchesPlayed}</td>
+														<td className="px-3 py-2 font-semibold text-emerald-300">
+															{row.kind === "captain" ? "-" : formatMoneyMillion(row.pricePaid)}
+														</td>
 													</tr>
 												))
 											)}
 										</tbody>
 									</table>
 								</div>
-								<p className="mt-3 text-sm font-semibold text-cyan-200">Total Players: {sortedCaptain2FinalRoster.length}</p>
+								<p className="mt-3 text-sm font-semibold text-cyan-200">Total Players: {captain2FinalDisplayRows.length}</p>
 							</div>
 							<div className="lg:col-span-2">
 								<button
@@ -2252,25 +2299,15 @@ function BattlegroundPanel({
 	const playersNeeded = Math.max(0, requiredSquadSize - roster.length);
 	const isLowBudgetWarning = budget < 10 && playersNeeded >= 5;
 	const sortedRoster = sortRoster(roster);
-	const rosterWithPurchaseNumber = roster.map((player, index) => ({
-		player,
-		purchaseNumber: index + 1,
-	}));
+	const squadDisplayRows = buildSquadDisplayRows(captainName, sortedRoster);
 
 	const squadCounts = getSquadCounts(sortedRoster);
-
-	const attPlayers = rosterWithPurchaseNumber.filter(
-		(entry) => toThreeCategory(entry.player.category || entry.player.position) === "Att"
-	);
-	const midPlayers = rosterWithPurchaseNumber.filter(
-		(entry) => toThreeCategory(entry.player.category || entry.player.position) === "Mid"
-	);
-	const defPlayers = rosterWithPurchaseNumber.filter(
-		(entry) => toThreeCategory(entry.player.category || entry.player.position) === "Def"
-	);
+	const attPlayers = sortedRoster.filter((player) => toThreeCategory(player.category || player.position) === "Att");
+	const midPlayers = sortedRoster.filter((player) => toThreeCategory(player.category || player.position) === "Mid");
+	const defPlayers = sortedRoster.filter((player) => toThreeCategory(player.category || player.position) === "Def");
 
 	function renderPitchDots(
-		categoryPlayers: Array<{ player: Player; purchaseNumber: number }>,
+		categoryPlayers: Player[],
 		category: PositionFilter
 	) {
 		const colorClass =
@@ -2282,17 +2319,17 @@ function BattlegroundPanel({
 
 		const topBase = category === "Att" ? 10 : category === "Mid" ? 38 : 68;
 
-		return categoryPlayers.map((entry, index) => (
+		return categoryPlayers.map((player, index) => (
 			<div
-				key={`${category}-${entry.player.name}-${entry.purchaseNumber}-${index}`}
+				key={`${category}-${player.name}-${index}`}
 				className={`absolute flex h-8 w-8 items-center justify-center rounded-full text-xs font-bold text-white ring-2 ${colorClass}`}
 				style={{
 					top: `${Math.min(topBase + 18, topBase + Math.floor(index / 3) * 9)}%`,
 					left: `${(index % 3) * 30 + 10}%`,
 				}}
-				title={`${entry.player.name} (#${entry.purchaseNumber})`}
+				title={player.name}
 			>
-				{entry.purchaseNumber}
+				{index + 1}
 			</div>
 		));
 	}
@@ -2315,11 +2352,11 @@ function BattlegroundPanel({
 	const squadListSection = (
 		<div className={`flex-1 rounded-lg border ${borderColor} px-3 py-3`}>
 			<div className="flex items-center justify-between gap-2">
-				<p className={`text-xs font-bold uppercase tracking-[0.15em] ${labelColor}`}>Squad ({roster.length})</p>
+				<p className={`text-xs font-bold uppercase tracking-[0.15em] ${labelColor}`}>Squad ({squadDisplayRows.length})</p>
 			</div>
 
 			<div className="mt-2 max-h-[420px] space-y-1 overflow-y-auto pr-1">
-				{rosterWithPurchaseNumber.length === 0 ? (
+				{squadDisplayRows.length === 0 ? (
 					<p
 						className={`rounded-lg border border-dashed ${borderColor} px-2 py-2 text-xs ${
 							isLeft ? "bg-slate-50 text-slate-500" : "bg-slate-900/40 text-slate-400"
@@ -2328,25 +2365,33 @@ function BattlegroundPanel({
 						No players yet
 					</p>
 				) : (
-					rosterWithPurchaseNumber.map(({ player, purchaseNumber }, index) => (
+					squadDisplayRows.map((row, index) => (
 						<div
-							key={`${player.name}-${player.position}-${index}`}
+							key={row.key}
 							className={`rounded-lg border ${borderColor} px-2 py-2 text-xs ${
 								isLeft ? "bg-slate-50 text-slate-900" : "bg-slate-900/50 text-white"
 							}`}
 						>
 							<div className="flex items-center gap-2">
-								<span className="flex h-5 w-5 items-center justify-center rounded-full bg-green-500 text-[10px] font-extrabold text-white">
-									{purchaseNumber}
-								</span>
-								<p className="font-bold">{player.name}</p>
+								{row.kind === "captain" ? (
+									<span className="inline-flex items-center rounded-full bg-amber-500 px-2 py-0.5 text-[10px] font-extrabold uppercase tracking-[0.14em] text-black">
+										Captain
+									</span>
+								) : (
+									<span className="flex h-5 w-5 items-center justify-center rounded-full bg-green-500 text-[10px] font-extrabold text-white">
+										{index}
+									</span>
+								)}
+								<p className="font-bold">{row.name}</p>
 							</div>
-							<p className={isLeft ? "text-slate-600" : "text-slate-400"}>
-								{toShortForm(player.position)}
-							</p>
-							<p className={`pt-1 font-semibold ${isLeft ? "text-teal-600" : "text-teal-400"}`}>
-								{formatMoneyMillion(player.soldPrice ?? 0)}
-							</p>
+							<p className={isLeft ? "text-slate-600" : "text-slate-400"}>{row.position}</p>
+							{row.kind === "player" ? (
+								<p className={`pt-1 font-semibold ${isLeft ? "text-teal-600" : "text-teal-400"}`}>
+									{formatMoneyMillion(row.pricePaid)}
+								</p>
+							) : (
+								<p className={`pt-1 font-semibold ${isLeft ? "text-teal-600" : "text-teal-400"}`}>Team captain</p>
+							)}
 						</div>
 					))
 				)}
@@ -2463,6 +2508,30 @@ function toThreeCategory(value: string): PositionFilter {
 	return "Def";
 }
 
+function buildSquadDisplayRows(captainName: string, roster: Player[]): SquadDisplayRow[] {
+	const captainRow: SquadDisplayRow = {
+		kind: "captain",
+		name: captainName || "Captain",
+		category: "Captain",
+		position: "Captain",
+		pricePaid: 0,
+		matchesPlayed: "N/A",
+		key: `captain-${captainName || "unknown"}`,
+	};
+
+	const playerRows = sortRoster(roster).map((player) => ({
+		kind: "player" as const,
+		name: player.name,
+		category: toThreeCategory(player.category || player.position),
+		position: toShortForm(player.position),
+		pricePaid: player.soldPrice ?? 0,
+		matchesPlayed: player.matchesPlayed ?? "N/A",
+		key: `${captainName}-${player.name}-${player.position}`,
+	}));
+
+	return [captainRow, ...playerRows];
+}
+
 function getSquadCounts(roster: Player[]) {
 	return {
 		Att: roster.filter((player) => toThreeCategory(player.category || player.position) === "Att").length,
@@ -2473,9 +2542,9 @@ function getSquadCounts(roster: Player[]) {
 
 function sortRoster(roster: Player[]) {
 	const categoryPriority: Record<PositionFilter, number> = {
-		Att: 0,
-		Mid: 1,
-		Def: 2,
+		Att: 1,
+		Mid: 2,
+		Def: 3,
 	};
 
 	return [...roster].sort((a, b) => {
